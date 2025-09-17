@@ -1,0 +1,38 @@
+# Xcode
+*.xcuserstate
+*.xcuserdatad/
+UserInterfaceState.xcuserstate
+project.xcworkspace/xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Build artifacts
+build/
+*/build/*
+
+# Temporary files
+*.tmp
+*.temp
+
+# SACD ISO files (can be large)
+*.iso
+*.sacd
+
+# Audio source files (usually too large for Git)
+*.dsf
+*.dff
+*.wav
+*.flac
+*.aiff
+*.m4a
