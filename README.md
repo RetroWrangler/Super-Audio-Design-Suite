@@ -17,7 +17,7 @@ SACD+ maintains the full DSD DISC structure while adding PCM build folders for e
 
 ### ✅ SACD+ Mode - **FULLY FUNCTIONAL**
 The SACD+ authoring pipeline is complete and working:
-- Creates hybrid discs with both CD and SACD layers
+- Creates hybrid discs with both PCM and DSD folders
 - Generated discs play perfectly on all compatible players
 - Supports both stereo and multichannel DSD audio
 - Full metadata and track information support
