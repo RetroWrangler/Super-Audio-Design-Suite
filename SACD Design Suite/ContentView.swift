@@ -24,8 +24,9 @@ extension URL {
 // MARK: - Models
 
 enum AuthoringMode: String, CaseIterable, Identifiable {
-    case sacdR   = "SACD"
     case sacdPlus = "SACD+"
+    case sacdX = "SACDx"
+    case sacdR   = "SACD"
     var id: String { rawValue }
 }
 
@@ -34,6 +35,18 @@ struct TrackItem: Identifiable, Hashable {
     var url: URL
     var title: String { url.deletingPathExtension().lastPathComponent }
     var ext: String { url.pathExtension.lowercased() }
+}
+
+enum TrackDropTarget {
+    case sacdPlusStereoDSF
+    case sacdPlusMultichannelDSF
+    case hybridStereoLossless
+    case maximumCompatibilityLossless
+    case maximumCompatibilityMP3
+    case hybridMultichannelLossless
+    case sacdRDSF
+    case sacdXStereoDSF
+    case sacdXMultichannelDSF
 }
 
 // MARK: - UDF 1.02 ISO Parser
@@ -74,14 +87,8 @@ struct DSDFileInfo {
 
 enum DSDFormat {
     case dsf
-    case dff
-    
-    var fileExtension: String {
-        switch self {
-        case .dsf: return "dsf"
-        case .dff: return "dff"
-        }
-    }
+
+    var fileExtension: String { "dsf" }
 }
 
 class DSDFileParser {
@@ -89,16 +96,13 @@ class DSDFileParser {
         let data = try Data(contentsOf: url)
         let fileSize = UInt64(data.count)
         
-        // Determine format by file extension
         let ext = url.pathExtension.lowercased()
-        let format: DSDFormat = ext == "dsf" ? .dsf : .dff
-        
-        switch format {
-        case .dsf:
-            return try parseDSF(data: data, url: url, fileSize: fileSize)
-        case .dff:
-            return try parseDFF(data: data, url: url, fileSize: fileSize)
+        guard ext == "dsf" else {
+            throw NSError(domain: "DSDParser", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Only DSF files are supported"])
         }
+
+        return try parseDSF(data: data, url: url, fileSize: fileSize)
     }
     
     private static func parseDSF(data: Data, url: URL, fileSize: UInt64) throws -> DSDFileInfo {
@@ -143,108 +147,6 @@ class DSDFileParser {
             duration: duration,
             fileSize: fileSize
         )
-    }
-    
-    private static func parseDFF(data: Data, url: URL, fileSize: UInt64) throws -> DSDFileInfo {
-        guard data.count >= 12 else {
-            throw NSError(domain: "DSDParser", code: 5, userInfo: [NSLocalizedDescriptionKey: "DFF file too small"])
-        }
-        
-        // Check DFF header
-        let dffHeader = data.subdata(in: 0..<4)
-        guard String(data: dffHeader, encoding: .ascii) == "FRM8" else {
-            throw NSError(domain: "DSDParser", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid DFF header"])
-        }
-        
-        // For DFF, we need to parse chunks to find format info
-        // This is a simplified parser - DFF is more complex than DSF
-        var offset = 12
-        var sampleRate: UInt32 = 2822400 // Default DSD64
-        var channels: UInt32 = 2 // Default stereo
-        var sampleCount: UInt64 = 0
-        
-        // Parse DFF chunks to find format information
-        while offset < data.count - 8 {
-            guard offset + 8 <= data.count else { break }
-            
-            let chunkID = data.subdata(in: offset..<offset+4)
-            let chunkSize = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 4, as: UInt32.self).bigEndian }
-            
-            if String(data: chunkID, encoding: .ascii) == "FVER" {
-                // Format version chunk
-                offset += 8 + Int(chunkSize)
-            } else if String(data: chunkID, encoding: .ascii) == "PROP" {
-                // Property chunk - contains format info
-                offset += 8
-                continue
-            } else if String(data: chunkID, encoding: .ascii) == "FS  " {
-                // Sample rate chunk
-                if offset + 12 <= data.count {
-                    sampleRate = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: UInt32.self).bigEndian }
-                }
-                offset += 8 + Int(chunkSize)
-            } else if String(data: chunkID, encoding: .ascii) == "CHNL" {
-                // Channel chunk
-                if offset + 10 <= data.count {
-                    channels = UInt32(data.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: UInt16.self).bigEndian })
-                }
-                offset += 8 + Int(chunkSize)
-            } else {
-                offset += 8 + Int(chunkSize)
-            }
-        }
-        
-        // Estimate sample count from file size (rough calculation)
-        let headerSize: UInt64 = 1024 // Approximate header size
-        let audioDataSize = fileSize > headerSize ? fileSize - headerSize : fileSize
-        sampleCount = audioDataSize * 8 // 1 bit per sample, 8 samples per byte
-        
-        let duration = Double(sampleCount) / Double(sampleRate)
-        
-        return DSDFileInfo(
-            url: url,
-            format: .dff,
-            sampleRate: sampleRate,
-            channels: channels,
-            bitsPerSample: 1,
-            sampleCount: sampleCount,
-            duration: duration,
-            fileSize: fileSize
-        )
-    }
-    
-    // Extract raw DSD audio data from DFF file
-    static func extractRawDSDFromDFF(url: URL) throws -> Data {
-        let data = try Data(contentsOf: url)
-        
-        // DFF structure: FRM8 [size] DSD [chunks...]
-        // We need to find the DSD chunk which contains the raw audio
-        guard data.count >= 12,
-              String(data: data.prefix(4), encoding: .ascii) == "FRM8",
-              String(data: data.subdata(in: 8..<12), encoding: .ascii) == "DSD " else {
-            throw NSError(domain: "DSDParser", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid DFF file format"])
-        }
-        
-        // Parse chunks to find DSD audio chunk
-        var offset = 12
-        while offset < data.count - 8 {
-            let chunkID = String(data: data.subdata(in: offset..<offset+4), encoding: .ascii) ?? ""
-            let chunkSize = data.subdata(in: offset+4..<offset+8).withUnsafeBytes { 
-                Int($0.load(as: UInt64.self).bigEndian)
-            }
-            
-            if chunkID == "DSD " {
-                // Found DSD audio chunk - return the raw audio data
-                let audioStart = offset + 8
-                let audioEnd = min(audioStart + chunkSize, data.count)
-                return data.subdata(in: audioStart..<audioEnd)
-            }
-            
-            // Move to next chunk (8-byte aligned)
-            offset += 8 + ((chunkSize + 1) & ~1)
-        }
-        
-        throw NSError(domain: "DSDParser", code: 2, userInfo: [NSLocalizedDescriptionKey: "No DSD audio chunk found in DFF file"])
     }
     
     // Extract raw DSD audio data from DSF file
@@ -775,7 +677,6 @@ class ISOReader {
             // Common SACD file patterns
             "TRACK": "TRACK".data(using: .ascii)!,
             "DST": ".DST".data(using: .ascii)!,
-            "DFF": ".DFF".data(using: .ascii)!,
             "DSF": ".DSF".data(using: .ascii)!
         ]
         
@@ -1149,30 +1050,70 @@ final class AuthoringState: ObservableObject {
     @Published var mode: AuthoringMode = .sacdPlus
 
     // SACD+ (formerly DSD Disc)
-    @Published var sacdPlusAlbumName: String = "ALBUM01"
+    let sacdPlusAlbumName: String = "ALBUM01"
     @Published var sacdPlusTracks: [TrackItem] = []
     @Published var sacdPlusVolumeName: String = "SACDPLUS"
-    @Published var sacdPlusUseISO9660: Bool = false // Toggle between UDF 1.02 and ISO 9660
-    @Published var sacdPlusEnhancedMode: Bool = false {// Enhanced mode: no folders, keep tags
+    @Published var sacdPlusMultichannelMode: Bool = false {
         didSet {
-            // Auto-set hybrid format when switching modes
-            if sacdPlusEnhancedMode {
-                hybridFormat = "FLAC"
-            } else {
-                hybridFormat = "MP3" // Default back to MP3 for standard mode
+            if sacdPlusMultichannelMode && sacdPlusEnhancedMode {
+                sacdPlusEnhancedMode = false
+            }
+        }
+    }
+    let multichannelAlbumName: String = "ALBUM02"
+    @Published var multichannelDSFTracks: [TrackItem] = []
+    @Published var multichannelLosslessTracks: [TrackItem] = []
+    @Published var sacdPlusEnhancedMode: Bool = false {
+        didSet {
+            if sacdPlusEnhancedMode && sacdPlusMultichannelMode {
+                sacdPlusMultichannelMode = false
+            }
+            if sacdPlusEnhancedMode && hybridFormat == "Maximum Compatibility" {
+                hybridFormat = uncompressedSupportMode ? "WAV" : "FLAC"
             }
         }
     }
     @Published var sacdPlusDiscCapacity: SACDPlusDiscCapacity = .standard
+    @Published var sacdPlusEnhancedUseISO9660: Bool = false
+    @Published var sacdPlusRenameTracks: Bool = true
 
     // Hybrid Mode (SACD+ only)
-    @Published var hybridMode: Bool = false
-    @Published var hybridFormat: String = "MP3"
+    @Published var hybridMode: Bool = true
+    @Published var hybridFormat: String = "FLAC"
+    @Published var uncompressedSupportMode: Bool = false {
+        didSet {
+            guard uncompressedSupportMode != oldValue else { return }
+            if hybridFormat != "Maximum Compatibility" {
+                hybridFormat = uncompressedSupportMode ? "WAV" : "FLAC"
+            }
+            if !hybridTracks.isEmpty {
+                hybridTracks.removeAll()
+                appendLog("Hybrid tracks cleared because the support format changed.")
+            }
+            if !maximumCompatibilityLosslessTracks.isEmpty {
+                maximumCompatibilityLosslessTracks.removeAll()
+                appendLog("Maximum Compatibility lossless tracks cleared because the support format changed.")
+            }
+            if !multichannelLosslessTracks.isEmpty {
+                multichannelLosslessTracks.removeAll()
+                appendLog("Multichannel lossless tracks cleared because the support format changed.")
+            }
+        }
+    }
     @Published var hybridTracks: [TrackItem] = []
     
-    // Dual PCM Mode - separate MP3 and WAV tracks
+    // Maximum Compatibility Mode - separate lossless and MP3 tracks
     @Published var mp3Tracks: [TrackItem] = []
-    @Published var wavTracks: [TrackItem] = []
+    @Published var maximumCompatibilityLosslessTracks: [TrackItem] = []
+
+    // SACDx: embedded backup ISO plus directly accessible DSD_DISC paths.
+    @Published var sacdXVolumeName: String = "SACDX"
+    @Published var sacdXBackupISO: URL? = nil
+    @Published var sacdXStereoTracks: [TrackItem] = []
+    @Published var sacdXMultichannelMode: Bool = false
+    @Published var sacdXMultichannelTracks: [TrackItem] = []
+    @Published var sacdXRenameTracks: Bool = true
+    @Published var sacdXDiscCapacity: SACDPlusDiscCapacity = .dualLayer
 
     // SACD-R (template-based assembler)
     @Published var sacdSourceFolder: URL? = nil        // donor SACD folder (MASTER.TOC, 2CH/, optional MCH/) or ISO file
@@ -1194,6 +1135,7 @@ final class AuthoringState: ObservableObject {
     @Published var currentTask: String = ""
     @Published var buildCompleted: Bool = false
     @Published var buildFailed: Bool = false
+    @Published var lastBuiltISOURL: URL? = nil
 
     func appendLog(_ s: String) {
         log += (log.isEmpty ? "" : "\n") + s
@@ -1214,6 +1156,7 @@ final class AuthoringState: ObservableObject {
         currentTask = ""
         buildCompleted = false
         buildFailed = false
+        lastBuiltISOURL = nil
     }
     
     func markBuildComplete() async {
@@ -1227,6 +1170,17 @@ final class AuthoringState: ObservableObject {
         buildCompleted = false
         await updateProgress(0.0, task: "Build failed")
     }
+
+    func burnLastISOWithFinder() {
+        guard let isoURL = lastBuiltISOURL,
+              FileManager.default.fileExists(atPath: isoURL.path) else {
+            appendLog("❌ The completed ISO could not be found. Build the ISO again before burning.")
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([isoURL])
+        appendLog("🔥 ISO selected in Finder: \(isoURL.path)")
+        appendLog("In Finder, choose File → Burn Disk Image “\(isoURL.lastPathComponent)” to Disc…")
+    }
     
     // MARK: - Space Calculation
     
@@ -1234,6 +1188,13 @@ final class AuthoringState: ObservableObject {
         switch mode {
         case .sacdPlus:
             return calculateSACDPlusSize()
+        case .sacdX:
+            var total = sacdXBackupISO.map(getFileSize(url:)) ?? 0
+            total += sacdXStereoTracks.reduce(0) { $0 + getFileSize(url: $1.url) }
+            if sacdXMultichannelMode {
+                total += sacdXMultichannelTracks.reduce(0) { $0 + getFileSize(url: $1.url) }
+            }
+            return Int64(Double(total) * 1.05)
         case .sacdR:
             return calculateSACDRSize()
         }
@@ -1246,12 +1207,18 @@ final class AuthoringState: ObservableObject {
         for track in sacdPlusTracks {
             totalSize += getFileSize(url: track.url)
         }
+        if sacdPlusMultichannelMode {
+            for track in multichannelDSFTracks { totalSize += getFileSize(url: track.url) }
+            if hybridMode {
+                for track in multichannelLosslessTracks { totalSize += getFileSize(url: track.url) }
+            }
+        }
         
         // Add hybrid tracks if enabled
         if hybridMode {
-            if hybridFormat == "Dual PCM" {
-                // Add WAV tracks
-                for track in wavTracks {
+            if hybridFormat == "Maximum Compatibility" {
+                // Add the selected lossless support format
+                for track in maximumCompatibilityLosslessTracks {
                     totalSize += getFileSize(url: track.url)
                 }
                 // Add MP3 tracks
@@ -1340,6 +1307,9 @@ final class AuthoringState: ObservableObject {
             guard let capacity = sacdPlusDiscCapacity.bytes else {
                 return 0.0 // Unlimited capacity
             }
+            return Double(projectSize) / Double(capacity)
+        case .sacdX:
+            guard let capacity = sacdXDiscCapacity.bytes else { return 0.0 }
             return Double(projectSize) / Double(capacity)
         case .sacdR:
             let capacity = sacdRDiscCapacity.bytes
@@ -1432,6 +1402,106 @@ final class AuthoringState: ObservableObject {
 
     // MARK: File pickers
 
+    private func naturallySortedTrackItems(from urls: [URL]) -> [TrackItem] {
+        urls.map { TrackItem(url: $0) }.sorted { lhs, rhs in
+            let comparison = lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent)
+            if comparison == .orderedSame {
+                return lhs.url.path.localizedStandardCompare(rhs.url.path) == .orderedAscending
+            }
+            return comparison == .orderedAscending
+        }
+    }
+
+    func addDroppedTracks(from urls: [URL], to target: TrackDropTarget) {
+        let requiredExtension: String
+        let targetName: String
+        switch target {
+        case .sacdPlusStereoDSF, .sacdPlusMultichannelDSF, .sacdRDSF, .sacdXStereoDSF, .sacdXMultichannelDSF:
+            requiredExtension = "dsf"
+            targetName = "DSF"
+        case .hybridStereoLossless, .maximumCompatibilityLossless, .hybridMultichannelLossless:
+            requiredExtension = uncompressedSupportMode ? "wav" : "flac"
+            targetName = requiredExtension.uppercased()
+        case .maximumCompatibilityMP3:
+            requiredExtension = "mp3"
+            targetName = "MP3"
+        }
+
+        let fileURLs = urls.filter { $0.isFileURL && !$0.hasDirectoryPath }
+        let validURLs = fileURLs.filter { $0.pathExtension.lowercased() == requiredExtension }
+        let rejectedURLs = fileURLs.filter { $0.pathExtension.lowercased() != requiredExtension }
+        if !rejectedURLs.isEmpty {
+            appendLog("❌ Only \(targetName) files are allowed in this table. Rejected: \(rejectedURLs.map(\.lastPathComponent).joined(separator: ", "))")
+        }
+
+        func mergedTracks(_ existing: [TrackItem]) -> [TrackItem] {
+            let existingPaths = Set(existing.map { $0.url.standardizedFileURL.path })
+            let uniqueURLs = validURLs.filter { !existingPaths.contains($0.standardizedFileURL.path) }
+            return (existing + uniqueURLs.map { TrackItem(url: $0) }).sorted { lhs, rhs in
+                let comparison = lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent)
+                if comparison == .orderedSame {
+                    return lhs.url.path.localizedStandardCompare(rhs.url.path) == .orderedAscending
+                }
+                return comparison == .orderedAscending
+            }
+        }
+
+        switch target {
+        case .sacdPlusStereoDSF:
+            sacdPlusTracks = mergedTracks(sacdPlusTracks)
+        case .sacdPlusMultichannelDSF:
+            multichannelDSFTracks = mergedTracks(multichannelDSFTracks)
+        case .hybridStereoLossless:
+            guard hybridMode && hybridFormat != "Maximum Compatibility" else { return }
+            hybridTracks = mergedTracks(hybridTracks)
+        case .maximumCompatibilityLossless:
+            guard hybridMode && hybridFormat == "Maximum Compatibility" else { return }
+            maximumCompatibilityLosslessTracks = mergedTracks(maximumCompatibilityLosslessTracks)
+        case .maximumCompatibilityMP3:
+            guard hybridMode && hybridFormat == "Maximum Compatibility" else { return }
+            mp3Tracks = mergedTracks(mp3Tracks)
+        case .hybridMultichannelLossless:
+            guard hybridMode && sacdPlusMultichannelMode else { return }
+            multichannelLosslessTracks = mergedTracks(multichannelLosslessTracks)
+        case .sacdRDSF:
+            sacdTracks = mergedTracks(sacdTracks)
+        case .sacdXStereoDSF:
+            sacdXStereoTracks = mergedTracks(sacdXStereoTracks)
+        case .sacdXMultichannelDSF:
+            guard sacdXMultichannelMode else { return }
+            sacdXMultichannelTracks = mergedTracks(sacdXMultichannelTracks)
+        }
+    }
+
+    func sacdPlusOutputFilename(for item: TrackItem) -> String {
+        guard let index = sacdPlusTracks.firstIndex(of: item) else { return "—" }
+        if !sacdPlusRenameTracks { return item.url.lastPathComponent }
+        if sacdPlusEnhancedMode {
+            return String(format: "%03d-%@.%@", index + 1, item.title, item.ext)
+        }
+        return String(format: "TRACK%03d.%@", index + 1, item.ext)
+    }
+
+    func multichannelDSFOutputFilename(for item: TrackItem) -> String {
+        guard let index = multichannelDSFTracks.firstIndex(of: item) else { return "—" }
+        if !sacdPlusRenameTracks { return item.url.lastPathComponent }
+        return String(format: "TRACK%03d.DSF", index + 1)
+    }
+
+    func multichannelPCMOutputFilename(for item: TrackItem) -> String {
+        guard let index = multichannelLosslessTracks.firstIndex(of: item) else { return "—" }
+        if !sacdPlusRenameTracks { return item.url.lastPathComponent }
+        return String(format: "TRACK%03d.%@", index + 1, item.ext.uppercased())
+    }
+
+    private func authoredFilename(for item: TrackItem, index: Int, enhancedTrackNumber: Int? = nil) -> String {
+        guard sacdPlusRenameTracks else { return item.url.lastPathComponent }
+        if let enhancedTrackNumber {
+            return String(format: "%03d-%@.%@", enhancedTrackNumber, item.title, item.ext)
+        }
+        return String(format: "TRACK%03d.%@", index + 1, item.ext)
+    }
+
     func pickSACDPlusTracks() {
         let panel = NSOpenPanel()
         
@@ -1441,12 +1511,8 @@ final class AuthoringState: ObservableObject {
             panel.allowedContentTypes = [UTType(filenameExtension: "dsf")!]
             panel.message = "Enhanced Mode: Only DSF files allowed. Tags will be preserved."
         } else {
-            // Standard mode allows DSF and DFF
-            panel.title = "Add DSD Tracks (.dsf / .dff)"
-            panel.allowedContentTypes = [
-                UTType(filenameExtension: "dsf")!,
-                UTType(filenameExtension: "dff")!
-            ]
+            panel.title = "Add DSD Tracks (.dsf)"
+            panel.allowedContentTypes = [UTType(filenameExtension: "dsf")!]
         }
         
         panel.canChooseFiles = true
@@ -1454,7 +1520,7 @@ final class AuthoringState: ObservableObject {
         panel.allowsMultipleSelection = true
         
         if panel.runModal() == .OK {
-            let newItems = panel.urls.map { TrackItem(url: $0) }
+            let newItems = naturallySortedTrackItems(from: panel.urls)
             
             // Validate file types for Enhanced Mode
             if sacdPlusEnhancedMode {
@@ -1472,43 +1538,52 @@ final class AuthoringState: ObservableObject {
         }
     }
 
+    func pickMultichannelDSFTracks() {
+        let panel = NSOpenPanel()
+        panel.title = "Add Multichannel DSF Tracks"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "dsf")!]
+        if panel.runModal() == .OK {
+            multichannelDSFTracks.append(contentsOf: naturallySortedTrackItems(from: panel.urls))
+        }
+    }
+
+    func pickMultichannelLosslessTracks() {
+        let requiredExtension = uncompressedSupportMode ? "wav" : "flac"
+        let panel = NSOpenPanel()
+        panel.title = uncompressedSupportMode ? "Add Multichannel WAV Tracks" : "Add Multichannel FLAC Tracks"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [UTType(filenameExtension: requiredExtension)!]
+        if panel.runModal() == .OK {
+            multichannelLosslessTracks.append(contentsOf: naturallySortedTrackItems(from: panel.urls))
+        }
+    }
+
     func pickHybridTracks() {
         let panel = NSOpenPanel()
-        
-        if sacdPlusEnhancedMode {
-            // Enhanced mode requires FLAC files only
-            panel.title = "Add FLAC Files (Enhanced Mode - Tags Preserved)"
-            panel.allowedContentTypes = [UTType(filenameExtension: "flac")!]
-            panel.message = "Enhanced Mode: Only FLAC files allowed. Tags will be preserved."
-        } else {
-            // Standard mode allows MP3 and WAV
-            panel.title = "Add Hybrid Tracks (.mp3 / .wav)"
-            panel.allowedContentTypes = [
-                UTType(filenameExtension: "mp3")!,
-                UTType(filenameExtension: "wav")!
-            ]
-        }
+        let requiredExtension = uncompressedSupportMode ? "wav" : "flac"
+        panel.title = uncompressedSupportMode ? "Add WAV Files (Uncompressed Support Mode)" : "Add FLAC Files"
+        panel.allowedContentTypes = [UTType(filenameExtension: requiredExtension)!]
+        panel.message = uncompressedSupportMode
+            ? "Only WAV files are allowed. Uncompressed audio requires substantially more disc space."
+            : "Only FLAC files are allowed for standard Hybrid Mode."
         
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         
         if panel.runModal() == .OK {
-            let newItems = panel.urls.map { TrackItem(url: $0) }
-            
-            // Validate file types for Enhanced Mode
-            if sacdPlusEnhancedMode {
-                let invalidItems = newItems.filter { $0.ext.lowercased() != "flac" }
-                if !invalidItems.isEmpty {
-                    appendLog("❌ Enhanced Mode hybrid requires FLAC files only. Rejected: \(invalidItems.map { $0.title }.joined(separator: ", "))")
-                    let validItems = newItems.filter { $0.ext.lowercased() == "flac" }
-                    hybridTracks.append(contentsOf: validItems)
-                } else {
-                    hybridTracks.append(contentsOf: newItems)
-                }
-            } else {
-                hybridTracks.append(contentsOf: newItems)
+            let newItems = naturallySortedTrackItems(from: panel.urls)
+            let validItems = newItems.filter { $0.ext.lowercased() == requiredExtension }
+            if validItems.count != newItems.count {
+                let invalidItems = newItems.filter { $0.ext.lowercased() != requiredExtension }
+                appendLog("❌ Only \(requiredExtension.uppercased()) files are allowed. Rejected: \(invalidItems.map { $0.title }.joined(separator: ", "))")
             }
+            hybridTracks.append(contentsOf: validItems)
         }
     }
     
@@ -1521,7 +1596,7 @@ final class AuthoringState: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "mp3")!]
         
         if panel.runModal() == .OK {
-            let newItems = panel.urls.map { TrackItem(url: $0) }
+            let newItems = naturallySortedTrackItems(from: panel.urls)
             let validItems = newItems.filter { $0.ext.lowercased() == "mp3" }
             if validItems.count != newItems.count {
                 let invalidItems = newItems.filter { $0.ext.lowercased() != "mp3" }
@@ -1531,37 +1606,61 @@ final class AuthoringState: ObservableObject {
         }
     }
     
-    func pickWAVTracks() {
+    func pickMaximumCompatibilityLosslessTracks() {
         let panel = NSOpenPanel()
-        panel.title = "Add WAV Tracks"
+        let requiredExtension = uncompressedSupportMode ? "wav" : "flac"
+        panel.title = uncompressedSupportMode ? "Add WAV Tracks" : "Add FLAC Tracks"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [UTType(filenameExtension: "wav")!]
+        panel.allowedContentTypes = [UTType(filenameExtension: requiredExtension)!]
         
         if panel.runModal() == .OK {
-            let newItems = panel.urls.map { TrackItem(url: $0) }
-            let validItems = newItems.filter { $0.ext.lowercased() == "wav" }
+            let newItems = naturallySortedTrackItems(from: panel.urls)
+            let validItems = newItems.filter { $0.ext.lowercased() == requiredExtension }
             if validItems.count != newItems.count {
-                let invalidItems = newItems.filter { $0.ext.lowercased() != "wav" }
-                appendLog("❌ Only WAV files allowed. Rejected: \(invalidItems.map { $0.title }.joined(separator: ", "))")
+                let invalidItems = newItems.filter { $0.ext.lowercased() != requiredExtension }
+                appendLog("❌ Only \(requiredExtension.uppercased()) files allowed. Rejected: \(invalidItems.map { $0.title }.joined(separator: ", "))")
             }
-            wavTracks.append(contentsOf: validItems)
+            maximumCompatibilityLosslessTracks.append(contentsOf: validItems)
         }
     }
 
     func pickSACDTracks() {
         let p = NSOpenPanel()
-        p.title = "Add DSD Tracks for SACD-R (.dsf / .dff)"
+        p.title = "Add DSF Tracks for SACD-R"
         p.canChooseFiles = true
         p.canChooseDirectories = false
         p.allowsMultipleSelection = true
-        p.allowedContentTypes = [
-            UTType(filenameExtension: "dsf")!,
-            UTType(filenameExtension: "dff")!
-        ]
+        p.allowedContentTypes = [UTType(filenameExtension: "dsf")!]
         if p.runModal() == .OK {
-            sacdTracks.append(contentsOf: p.urls.map { TrackItem(url: $0) })
+            sacdTracks.append(contentsOf: naturallySortedTrackItems(from: p.urls))
+        }
+    }
+
+    func pickSACDxBackupISO() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose SACDx Backup ISO"
+        panel.allowedContentTypes = [UTType(filenameExtension: "iso")!]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK { sacdXBackupISO = panel.url }
+    }
+
+    func pickSACDxTracks(multichannel: Bool) {
+        let panel = NSOpenPanel()
+        panel.title = multichannel ? "Add SACDx Multichannel DSF Tracks" : "Add SACDx Stereo DSF Tracks"
+        panel.allowedContentTypes = [UTType(filenameExtension: "dsf")!]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK {
+            if multichannel {
+                sacdXMultichannelTracks.append(contentsOf: naturallySortedTrackItems(from: panel.urls))
+            } else {
+                sacdXStereoTracks.append(contentsOf: naturallySortedTrackItems(from: panel.urls))
+            }
         }
     }
 
@@ -1826,6 +1925,16 @@ final class AuthoringState: ObservableObject {
             let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("SACDDesignSuite_SACDPLUS_\(UUID().uuidString)")
             let root = tmp
+            defer { try? fm.removeItem(at: root) }
+            var expectedDSFPaths: [String] = []
+            var manifestLines = [
+                "SACD+ Build Manifest",
+                "Volume: \(sacdPlusVolumeName)",
+                "Filesystem: \(sacdPlusEnhancedMode && sacdPlusEnhancedUseISO9660 ? "ISO 9660 + Joliet" : "UDF 1.02")",
+                "Channel mode: \(sacdPlusMultichannelMode ? "Stereo + Multichannel" : "Stereo")",
+                "",
+                "Order | Output path | Source path"
+            ]
             
             if sacdPlusEnhancedMode {
                 // Enhanced Mode: No folders, direct file placement with tags preserved
@@ -1836,31 +1945,31 @@ final class AuthoringState: ObservableObject {
                 // Process DSF files first using original filenames
                 await updateProgress(0.20, task: "Processing DSF tracks...")
                 for (idx, item) in sacdPlusTracks.enumerated() {
-                    let originalFilename = item.url.deletingPathExtension().lastPathComponent
-                    let trackNo = String(format: "%02d", idx + 1)
-                    let filename = "\(trackNo)-\(originalFilename).\(item.ext)"
+                    let trackNo = String(format: "%03d", idx + 1)
+                    let filename = authoredFilename(for: item, index: idx, enhancedTrackNumber: idx + 1)
                     let dest = root.appendingPathComponent(filename)
                     try fm.copyItem(at: item.url, to: dest)
+                    expectedDSFPaths.append(filename)
+                    manifestLines.append("\(trackNo) | \(filename) | \(item.url.path)")
                     appendLog("Added \(dest.lastPathComponent) (DSF, original filename preserved)")
                     let progress = 0.20 + (Double(idx + 1) / Double(sacdPlusTracks.count)) * 0.30
                     await updateProgress(progress)
                 }
-                
-                // Enhanced Hybrid Mode: FLAC files with preserved tags (ordered after DSF)
+
+                // Enhanced Hybrid Mode: lossless support files ordered after DSF
                 if hybridMode {
-                    await updateProgress(0.55, task: "Processing FLAC tracks...")
+                    let supportFormat = uncompressedSupportMode ? "WAV" : "FLAC"
+                    await updateProgress(0.55, task: "Processing \(supportFormat) tracks...")
                     let dsfCount = sacdPlusTracks.count
                     for (idx, item) in hybridTracks.enumerated() {
-                        let originalFilename = item.url.deletingPathExtension().lastPathComponent
-                        let trackNo = String(format: "%02d", dsfCount + idx + 1)
-                        let filename = "\(trackNo)-\(originalFilename).\(item.ext)"
+                        let filename = authoredFilename(for: item, index: idx, enhancedTrackNumber: dsfCount + idx + 1)
                         let dest = root.appendingPathComponent(filename)
                         try fm.copyItem(at: item.url, to: dest)
-                        appendLog("Added \(dest.lastPathComponent) (FLAC, original filename preserved)")
+                        appendLog("Added \(dest.lastPathComponent) (\(supportFormat), original filename preserved)")
                         let progress = 0.55 + (Double(idx + 1) / Double(hybridTracks.count)) * 0.15
                         await updateProgress(progress)
                     }
-                    appendLog("Enhanced Hybrid Mode: DSF files first (\(dsfCount) tracks), then FLAC files (\(hybridTracks.count) tracks)")
+                    appendLog("Enhanced Hybrid Mode: DSF files first (\(dsfCount) tracks), then \(supportFormat) files (\(hybridTracks.count) tracks)")
                 }
                 
             } else {
@@ -1873,12 +1982,26 @@ final class AuthoringState: ObservableObject {
                 // Copy/rename DSD tracks to TRACKxx.ext (DSD metadata stripping not reliable)
                 await updateProgress(0.20, task: "Processing DSD tracks...")
                 for (idx, item) in sacdPlusTracks.enumerated() {
-                    let trackNo = String(format: "TRACK%02d", idx + 1)
-                    let dest = album.appendingPathComponent("\(trackNo).\(item.ext)")
+                    let dest = album.appendingPathComponent(authoredFilename(for: item, index: idx))
                     try fm.copyItem(at: item.url, to: dest)
+                    let relativePath = "DSD_DISC/\(sacdPlusAlbumName)/\(dest.lastPathComponent)"
+                    expectedDSFPaths.append(relativePath)
+                    manifestLines.append(String(format: "%03d | %@ | %@", idx + 1, relativePath, item.url.path))
                     appendLog("Added \(dest.lastPathComponent) (DSD metadata preserved - ffmpeg limitation)")
                     let progress = 0.20 + (Double(idx + 1) / Double(sacdPlusTracks.count)) * 0.30
                     await updateProgress(progress)
+                }
+
+                if sacdPlusMultichannelMode {
+                    let multichannelAlbum = sacdPlusRoot.appendingPathComponent(multichannelAlbumName)
+                    try fm.createDirectory(at: multichannelAlbum, withIntermediateDirectories: true)
+                    for (idx, item) in multichannelDSFTracks.enumerated() {
+                        let dest = multichannelAlbum.appendingPathComponent(authoredFilename(for: item, index: idx))
+                        try fm.copyItem(at: item.url, to: dest)
+                        let relativePath = "DSD_DISC/\(multichannelAlbumName)/\(dest.lastPathComponent)"
+                        expectedDSFPaths.append(relativePath)
+                        manifestLines.append(String(format: "MC%03d | %@ | %@", idx + 1, relativePath, item.url.path))
+                    }
                 }
 
                 // Hybrid Mode: Add hybrid files to PCM_DISC folder
@@ -1887,55 +2010,82 @@ final class AuthoringState: ObservableObject {
                     let hybridRoot = root.appendingPathComponent("PCM_DISC")
                     let hybridAlbum = hybridRoot.appendingPathComponent(sacdPlusAlbumName)
                     try fm.createDirectory(at: hybridAlbum, withIntermediateDirectories: true)
-                    
-                    if hybridFormat == "Dual PCM" {
-                        // Process WAV tracks first
-                        let totalHybridTracks = wavTracks.count + mp3Tracks.count
-                        for (idx, item) in wavTracks.enumerated() {
-                            let ext = item.ext
-                            let trackNo = String(format: "TRACK%02d", idx + 1)
-                            let dest = hybridAlbum.appendingPathComponent("\(trackNo).\(ext)")
+
+                    if sacdPlusMultichannelMode {
+                        let multichannelHybridAlbum = hybridRoot.appendingPathComponent(multichannelAlbumName)
+                        try fm.createDirectory(at: multichannelHybridAlbum, withIntermediateDirectories: true)
+                        for (idx, item) in multichannelLosslessTracks.enumerated() {
+                            let dest = multichannelHybridAlbum.appendingPathComponent(authoredFilename(for: item, index: idx))
                             try await stripMetadata(input: item.url, output: dest)
-                            appendLog("Added WAV \(dest.lastPathComponent) to PCM_DISC without tags")
+                        }
+                        appendLog("Multichannel lossless path created in PCM_DISC/\(multichannelAlbumName)")
+                    }
+                    
+                    if hybridFormat == "Maximum Compatibility" {
+                        let losslessFormat = uncompressedSupportMode ? "WAV" : "FLAC"
+                        let mp3AlbumName = sacdPlusMultichannelMode ? "ALBUM03" : "ALBUM02"
+                        let mp3Album = hybridRoot.appendingPathComponent(mp3AlbumName)
+                        try fm.createDirectory(at: mp3Album, withIntermediateDirectories: true)
+                        // Process the selected lossless support format first
+                        let totalHybridTracks = maximumCompatibilityLosslessTracks.count + mp3Tracks.count
+                        for (idx, item) in maximumCompatibilityLosslessTracks.enumerated() {
+                            let dest = hybridAlbum.appendingPathComponent(authoredFilename(for: item, index: idx))
+                            try await stripMetadata(input: item.url, output: dest)
+                            appendLog("Added \(losslessFormat) \(dest.lastPathComponent) to PCM_DISC without tags")
                             let progress = 0.55 + (Double(idx + 1) / Double(totalHybridTracks)) * 0.20
                             await updateProgress(progress)
                         }
                         
-                        // Process MP3 tracks second
+                        // MP3 compatibility copies use a dedicated album path.
                         for (idx, item) in mp3Tracks.enumerated() {
-                            let ext = item.ext
-                            let trackNo = String(format: "TRACK%02d", idx + wavTracks.count + 1)
-                            let dest = hybridAlbum.appendingPathComponent("\(trackNo).\(ext)")
+                            let dest = mp3Album.appendingPathComponent(authoredFilename(for: item, index: idx))
                             try await stripMetadata(input: item.url, output: dest)
-                            appendLog("Added MP3 \(dest.lastPathComponent) to PCM_DISC without tags")
-                            let progress = 0.55 + (Double(wavTracks.count + idx + 1) / Double(totalHybridTracks)) * 0.20
+                            appendLog("Added MP3 \(dest.lastPathComponent) to PCM_DISC/\(mp3AlbumName) without tags")
+                            let progress = 0.55 + (Double(maximumCompatibilityLosslessTracks.count + idx + 1) / Double(totalHybridTracks)) * 0.20
                             await updateProgress(progress)
                         }
                         
-                        appendLog("Dual PCM Mode: PCM_DISC with WAV (\(wavTracks.count) tracks) first, then MP3 (\(mp3Tracks.count) tracks)")
+                        appendLog("Maximum Compatibility Mode: \(losslessFormat) in PCM_DISC/\(sacdPlusAlbumName), MP3 in PCM_DISC/\(mp3AlbumName)")
                     } else {
                         // Regular single format processing
                         for (idx, item) in hybridTracks.enumerated() {
                             let ext = item.ext
-                            let trackNo = String(format: "TRACK%02d", idx + 1)
-                            let dest = hybridAlbum.appendingPathComponent("\(trackNo).\(ext)")
+                            let dest = hybridAlbum.appendingPathComponent(authoredFilename(for: item, index: idx))
                             try await stripMetadata(input: item.url, output: dest)
                             appendLog("Added hybrid \(dest.lastPathComponent) (\(ext.uppercased())) to PCM_DISC without tags")
                         }
-                        if hybridFormat.uppercased() == "MP3" {
-                            appendLog("Hybrid Mode: PCM_DISC with MP3 files (lossy — smaller size but reduced quality)")
-                        } else if hybridFormat.uppercased() == "WAV" {
+                        if hybridFormat.uppercased() == "WAV" {
                             appendLog("Hybrid Mode: PCM_DISC with WAV files (lossless — larger size, full quality preserved)")
                         } else {
-                            appendLog("Hybrid Mode: PCM_DISC with FLAC files (lossless with metadata preserved)")
+                            appendLog("Hybrid Mode: PCM_DISC with FLAC files (lossless and space-efficient)")
                         }
                     }
                 }
             }
 
             await updateProgress(0.80, task: "Creating ISO file...")
-            try await runHDIUtilMakeHybrid(inputFolder: root, volumeName: sacdPlusVolumeName, outputISO: outURL, useISO9660: sacdPlusUseISO9660)
-            
+            if sacdPlusEnhancedMode && sacdPlusEnhancedUseISO9660 {
+                try await runHDIUtilMakeHybrid(
+                    inputFolder: root,
+                    volumeName: sacdPlusVolumeName,
+                    outputISO: outURL,
+                    useISO9660: true
+                )
+            } else {
+                try await runMKISOFS(inputFolder: root, volumeName: sacdPlusVolumeName, outputISO: outURL)
+            }
+            let manifestURL = try writeSACDPlusManifest(lines: manifestLines, nextTo: outURL)
+            appendLog("🧾 Build manifest created: \(manifestURL.path)")
+            await updateProgress(0.90, task: "Verifying ISO contents...")
+            try verifySACDPlusISO(at: outURL, expectedDSFPaths: expectedDSFPaths)
+            if !sacdPlusEnhancedMode && sacdPlusRenameTracks {
+                try verifyTrackDirectoryRecordOrder(in: outURL)
+                appendLog("✅ Verified deterministic UDF directory-record order")
+            } else if !sacdPlusRenameTracks {
+                appendLog("⚠️ Track renaming disabled: playback order depends on the player sorting the original filenames")
+            }
+            appendLog("✅ Verified \(expectedDSFPaths.count) DSF files in completed ISO")
+            lastBuiltISOURL = outURL
             await markBuildComplete()
             if sacdPlusEnhancedMode {
                 appendLog("✅ SACD+ Enhanced ISO created: \(outURL.path)")
@@ -1947,6 +2097,133 @@ final class AuthoringState: ObservableObject {
             await markBuildFailed()
         }
 
+        isWorking = false
+    }
+
+    private func writeSACDPlusManifest(lines: [String], nextTo isoURL: URL) throws -> URL {
+        let baseName = isoURL.deletingPathExtension().lastPathComponent
+        let manifestURL = isoURL.deletingLastPathComponent()
+            .appendingPathComponent("\(baseName)-manifest.txt")
+        let contents = lines.joined(separator: "\n") + "\n"
+        try contents.write(to: manifestURL, atomically: true, encoding: .utf8)
+        return manifestURL
+    }
+
+    private func verifySACDPlusISO(at isoURL: URL, expectedDSFPaths: [String]) throws {
+        let attach = Process()
+        attach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        attach.arguments = ["attach", "-readonly", "-nobrowse", "-plist", isoURL.path]
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        attach.standardOutput = outputPipe
+        attach.standardError = errorPipe
+        try attach.run()
+        attach.waitUntilExit()
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorText = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard attach.terminationStatus == 0 else {
+            throw NSError(domain: "SACDDesignSuite", code: Int(attach.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "Could not mount completed ISO for verification. \(errorText)"])
+        }
+
+        guard let plist = try PropertyListSerialization.propertyList(from: output, options: [], format: nil) as? [String: Any],
+              let entities = plist["system-entities"] as? [[String: Any]],
+              let mountPoint = entities.compactMap({ $0["mount-point"] as? String }).first else {
+            throw NSError(domain: "SACDDesignSuite", code: 20,
+                          userInfo: [NSLocalizedDescriptionKey: "Completed ISO mounted, but no mount point was returned"])
+        }
+
+        defer {
+            let detach = Process()
+            detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            detach.arguments = ["detach", mountPoint]
+            if (try? detach.run()) != nil {
+                detach.waitUntilExit()
+            }
+        }
+
+        let mountedRoot = URL(fileURLWithPath: mountPoint, isDirectory: true)
+        let missing = expectedDSFPaths.filter {
+            !FileManager.default.fileExists(atPath: mountedRoot.appendingPathComponent($0).path)
+        }
+        guard missing.isEmpty else {
+            throw NSError(domain: "SACDDesignSuite", code: 21,
+                          userInfo: [NSLocalizedDescriptionKey: "ISO verification failed. Missing: \(missing.joined(separator: ", "))"])
+        }
+    }
+
+    func buildSACDx() async {
+        guard let backupISO = sacdXBackupISO else {
+            appendLog("Choose a backup ISO for the BACKUP folder.")
+            return
+        }
+        guard !sacdXStereoTracks.isEmpty else {
+            appendLog("Add at least one stereo DSF track for DSD_DISC/ALBUM01.")
+            return
+        }
+        guard let outURL = pickSaveURL(suggested: "\(sacdXVolumeName).iso") else { return }
+
+        resetProgress()
+        isWorking = true
+        log = ""
+        appendLog("Building SACDx…")
+        do {
+            let fm = FileManager.default
+            let root = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("SACDDesignSuite_SACDX_\(UUID().uuidString)")
+            defer { try? fm.removeItem(at: root) }
+            let backupFolder = root.appendingPathComponent("BACKUP")
+            let stereoFolder = root.appendingPathComponent("DSD_DISC/ALBUM01")
+            try fm.createDirectory(at: backupFolder, withIntermediateDirectories: true)
+            try fm.createDirectory(at: stereoFolder, withIntermediateDirectories: true)
+            try fm.copyItem(at: backupISO, to: backupFolder.appendingPathComponent(backupISO.lastPathComponent))
+            await updateProgress(0.20, task: "Adding stereo DSD tracks…")
+
+            var expectedPaths: [String] = []
+            var manifest = [
+                "SACDx Build Manifest",
+                "Volume: \(sacdXVolumeName)",
+                "Backup: BACKUP/\(backupISO.lastPathComponent)",
+                "Filesystem: UDF",
+                "",
+                "Order | Output path | Source path"
+            ]
+            func filename(for item: TrackItem, index: Int) -> String {
+                sacdXRenameTracks ? String(format: "TRACK%03d.dsf", index + 1) : item.url.lastPathComponent
+            }
+            for (index, item) in sacdXStereoTracks.enumerated() {
+                let name = filename(for: item, index: index)
+                let relative = "DSD_DISC/ALBUM01/\(name)"
+                try fm.copyItem(at: item.url, to: stereoFolder.appendingPathComponent(name))
+                expectedPaths.append(relative)
+                manifest.append(String(format: "%03d | %@ | %@", index + 1, relative, item.url.path))
+            }
+            if sacdXMultichannelMode {
+                let multichannelFolder = root.appendingPathComponent("DSD_DISC/ALBUM02")
+                try fm.createDirectory(at: multichannelFolder, withIntermediateDirectories: true)
+                for (index, item) in sacdXMultichannelTracks.enumerated() {
+                    let name = filename(for: item, index: index)
+                    let relative = "DSD_DISC/ALBUM02/\(name)"
+                    try fm.copyItem(at: item.url, to: multichannelFolder.appendingPathComponent(name))
+                    expectedPaths.append(relative)
+                    manifest.append(String(format: "MC%03d | %@ | %@", index + 1, relative, item.url.path))
+                }
+            }
+
+            await updateProgress(0.70, task: "Creating deterministic SACDx UDF ISO…")
+            try await runMKISOFS(inputFolder: root, volumeName: sacdXVolumeName, outputISO: outURL)
+            _ = try writeSACDPlusManifest(lines: manifest, nextTo: outURL)
+            await updateProgress(0.90, task: "Verifying SACDx ISO…")
+            try verifySACDPlusISO(at: outURL, expectedDSFPaths: expectedPaths)
+            if sacdXRenameTracks { try verifyTrackDirectoryRecordOrder(in: outURL) }
+            lastBuiltISOURL = outURL
+            appendLog("✅ SACDx ISO created: \(outURL.path)")
+            await markBuildComplete()
+        } catch {
+            appendLog("❌ Error: \(error.localizedDescription)")
+            await markBuildFailed()
+        }
         isWorking = false
     }
 
@@ -1985,6 +2262,7 @@ final class AuthoringState: ObservableObject {
         }
         guard let outURL = pickSaveURL(suggested: "\(sacdVolumeName).iso") else { return }
 
+        resetProgress()
         isWorking = true
         log = ""
         let sourceType = isSourceISO ? "ISO" : "folder"
@@ -2026,6 +2304,8 @@ final class AuthoringState: ObservableObject {
             }
             try await runHDIUtilMakeHybrid(inputFolder: src, volumeName: sacdVolumeName, outputISO: outURL)
             appendLog("✅ SACD-R ISO created: \(outURL.path)")
+            lastBuiltISOURL = outURL
+            await markBuildComplete()
         } catch {
             appendLog("❌ Error: \(error.localizedDescription)")
             await markBuildFailed()
@@ -2048,6 +2328,7 @@ final class AuthoringState: ObservableObject {
         }
         guard let outURL = pickSaveURL(suggested: "\(sacdVolumeName).iso") else { return }
 
+        resetProgress()
         isWorking = true
         log = ""
         let sourceType = isSourceISO ? "ISO" : "folder"
@@ -2145,6 +2426,8 @@ final class AuthoringState: ObservableObject {
 
             try await runHDIUtilMakeHybrid(inputFolder: dstRoot, volumeName: sacdVolumeName, outputISO: outURL)
             appendLog("✅ SACD-R ISO created: \(outURL.path)")
+            lastBuiltISOURL = outURL
+            await markBuildComplete()
         } catch {
             appendLog("❌ Error: \(error.localizedDescription)")
             await markBuildFailed()
@@ -2163,6 +2446,7 @@ final class AuthoringState: ObservableObject {
         }
         guard let outURL = pickSaveURL(suggested: "\(sacdVolumeName)_Generated.iso") else { return }
 
+        resetProgress()
         isWorking = true
         log = ""
         appendLog("Generating SACD from \(sacdTracks.count) DSD track(s)…")
@@ -2182,7 +2466,7 @@ final class AuthoringState: ObservableObject {
                     // Create a fallback DSD info
                     let fallbackInfo = DSDFileInfo(
                         url: trackItem.url,
-                        format: trackItem.ext == "dsf" ? .dsf : .dff,
+                        format: .dsf,
                         sampleRate: 2822400, // DSD64
                         channels: 2,
                         bitsPerSample: 1,
@@ -2242,20 +2526,14 @@ final class AuthoringState: ObservableObject {
             let areaTOCSector = 540
             appendLog("✅ Generated Area TOC at sectors \(areaTOCSector)-\(areaTOCSector + 1)")
             
-            // Add DSD audio data (extract raw DSD from DFF/DSF files)
+            // Add DSD audio data extracted from DSF files
             let audioStartSector = areaTOCStartSector + 20
             for (index, track) in dsdTracks.enumerated() {
                 appendLog("Adding track \(index + 1) raw DSD audio data...")
                 
                 // Extract raw DSD audio data instead of copying complete file
-                let rawDSDData: Data
-                if track.format == .dff {
-                    rawDSDData = try DSDFileParser.extractRawDSDFromDFF(url: track.url)
-                    appendLog("✓ Extracted raw DSD from DFF file")
-                } else {
-                    rawDSDData = try DSDFileParser.extractRawDSDFromDSF(url: track.url)
-                    appendLog("✓ Extracted raw DSD from DSF file")
-                }
+                let rawDSDData = try DSDFileParser.extractRawDSDFromDSF(url: track.url)
+                appendLog("✓ Extracted raw DSD from DSF file")
                 
                 // Pad to sector boundary
                 let paddedSize = ((rawDSDData.count + 2047) / 2048) * 2048
@@ -2271,6 +2549,8 @@ final class AuthoringState: ObservableObject {
             try sacdBinaryData.write(to: outURL)
             appendLog("✅ Generated raw SACD ISO: \(outURL.path)")
             appendLog("✅ Total size: \(sacdBinaryData.count) bytes (\(sacdBinaryData.count / 2048) sectors)")
+            lastBuiltISOURL = outURL
+            await markBuildComplete()
             
         } catch {
             appendLog("❌ Error: \(error.localizedDescription)")
@@ -2299,6 +2579,96 @@ final class AuthoringState: ObservableObject {
         if task.terminationStatus != 0 {
             throw NSError(domain: "SACDDesignSuite", code: Int(task.terminationStatus),
                           userInfo: [NSLocalizedDescriptionKey: "DST encoder failed (\(task.terminationStatus))"])
+        }
+    }
+
+    private func mkisofsURL() -> URL? {
+        let fm = FileManager.default
+        let bundledCandidates = [
+            Bundle.main.url(forResource: "mkisofs", withExtension: nil, subdirectory: "Tools"),
+            Bundle.main.url(forResource: "mkisofs", withExtension: nil, subdirectory: "Resources/Tools"),
+            Bundle.main.url(forResource: "mkisofs", withExtension: nil)
+        ].compactMap { $0 }
+        if let bundled = bundledCandidates.first(where: { fm.isExecutableFile(atPath: $0.path) }) {
+            appendLog("Using bundled deterministic UDF authoring tool")
+            return bundled
+        }
+        for path in ["/opt/homebrew/bin/mkisofs", "/usr/local/bin/mkisofs", "/usr/bin/mkisofs"] {
+            if fm.isExecutableFile(atPath: path) {
+                return URL(fileURLWithPath: path)
+            }
+        }
+        return nil
+    }
+
+    private func runMKISOFS(inputFolder: URL, volumeName: String, outputISO: URL) async throws {
+        guard let executable = mkisofsURL() else {
+            throw NSError(
+                domain: "SACDDesignSuite",
+                code: 30,
+                userInfo: [NSLocalizedDescriptionKey: "The bundled deterministic UDF authoring tool is missing or cannot run. Reinstall the app, or install the Homebrew dvdrtools package. The app will not fall back to unordered UDF authoring."]
+            )
+        }
+
+        let task = Process()
+        task.executableURL = executable
+        task.arguments = [
+            "-udf",
+            "-V", String(volumeName.prefix(32)),
+            "-o", outputISO.path,
+            inputFolder.path
+        ]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        appendLog("Creating deterministic UDF image with mkisofs...")
+        try task.run()
+        for try await line in pipe.fileHandleForReading.bytes.lines {
+            await MainActor.run { self.appendLog(String(line)) }
+        }
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else {
+            throw NSError(
+                domain: "SACDDesignSuite",
+                code: Int(task.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "mkisofs failed with exit code \(task.terminationStatus)"]
+            )
+        }
+    }
+
+    private func verifyTrackDirectoryRecordOrder(in isoURL: URL) throws {
+        let handle = try FileHandle(forReadingFrom: isoURL)
+        defer { try? handle.close() }
+        let metadata = try handle.read(upToCount: 16 * 1024 * 1024) ?? Data()
+        guard let text = String(data: metadata, encoding: .isoLatin1) else {
+            throw NSError(domain: "SACDDesignSuite", code: 31,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not inspect ISO directory metadata"])
+        }
+        let expression = try NSRegularExpression(pattern: #"TRACK([0-9]{3})\.(DSF|FLAC|WAV|MP3)"#, options: [.caseInsensitive])
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        let numbers = expression.matches(in: text, range: range).compactMap { match -> Int? in
+            guard let numberRange = Range(match.range(at: 1), in: text) else { return nil }
+            return Int(text[numberRange])
+        }
+        guard !numbers.isEmpty else {
+            throw NSError(domain: "SACDDesignSuite", code: 32,
+                          userInfo: [NSLocalizedDescriptionKey: "No track directory records were found in the completed ISO"])
+        }
+
+        var previous: Int?
+        for number in numbers {
+            if let prior = previous {
+                let continuesSequence = number == prior + 1
+                let startsNewSequence = number == 1
+                if !continuesSequence && !startsNewSequence {
+                    throw NSError(
+                        domain: "SACDDesignSuite",
+                        code: 33,
+                        userInfo: [NSLocalizedDescriptionKey: "ISO directory records are out of order: TRACK\(String(format: "%03d", prior)) is followed by TRACK\(String(format: "%03d", number)). Build rejected."]
+                    )
+                }
+            }
+            previous = number
         }
     }
 
@@ -2449,8 +2819,14 @@ struct SpaceUsageBar: View {
 struct ContentView: View {
     @StateObject private var state = AuthoringState()
     @State private var sacdPlusSelection = Set<TrackItem.ID>()
+    @State private var multichannelDSFSelection = Set<TrackItem.ID>()
+    @State private var multichannelPCMSelection = Set<TrackItem.ID>()
     @State private var sacdSelection = Set<TrackItem.ID>()
+    @State private var sacdXStereoSelection = Set<TrackItem.ID>()
+    @State private var sacdXMultichannelSelection = Set<TrackItem.ID>()
     @State private var showLog: Bool = false
+    @State private var showHelpPane: Bool = true
+    @State private var experimentalMode: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2467,12 +2843,27 @@ struct ContentView: View {
         VStack(spacing: 16) {
             HStack {
                 Picker("Mode", selection: $state.mode) {
-                    ForEach(AuthoringMode.allCases) { mode in
+                    ForEach(experimentalMode ? AuthoringMode.allCases : [.sacdPlus, .sacdX]) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
                 Spacer()
+                Button {
+                    experimentalMode.toggle()
+                    if !experimentalMode && state.mode == .sacdR {
+                        state.mode = .sacdPlus
+                    }
+                } label: {
+                    Label(experimentalMode ? "Exit Experimental Mode" : "Enter Experimental Mode",
+                          systemImage: experimentalMode ? "testtube.2" : "testtube.2")
+                }
+                Button {
+                    showHelpPane.toggle()
+                } label: {
+                    Label(showHelpPane ? "Hide Help Pane" : "Show Help Pane",
+                          systemImage: showHelpPane ? "sidebar.left" : "sidebar.right")
+                }
             }
         }
         .padding(12)
@@ -2480,15 +2871,19 @@ struct ContentView: View {
 
     @ViewBuilder private var content: some View {
         HStack(alignment: .top, spacing: 0) {
-            descriptionPanel
-                .frame(width: 340, alignment: .top)
-                .padding(12)
-            Divider()
+            if showHelpPane {
+                descriptionPanel
+                    .frame(width: 340, alignment: .top)
+                    .padding(12)
+                Divider()
+            }
             ScrollView {
                 VStack {
                     switch state.mode {
                     case .sacdR:
                         sacdRView
+                    case .sacdX:
+                        sacdXView
                     case .sacdPlus:
                         sacdPlusView
                     }
@@ -2517,23 +2912,28 @@ struct ContentView: View {
                     .frame(width: 220)
                 Spacer()
                 
-                // Album Folder only appears in standard mode
                 if !state.sacdPlusEnhancedMode {
-                    Text("Album Folder:")
-                    TextField("ALBUM01", text: $state.sacdPlusAlbumName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 220)
+                    Text("Stereo DSD Folder: ALBUM01")
+                        .foregroundColor(.secondary)
                 }
             }
             
             HStack {
                 Text("Filesystem:")
-                Picker("", selection: $state.sacdPlusUseISO9660) {
-                    Text("UDF 1.02 (SACD Standard)").tag(false)
-                    Text("ISO 9660 + Joliet (Better Compatibility)").tag(true)
+                if state.sacdPlusEnhancedMode {
+                    Picker("", selection: $state.sacdPlusEnhancedUseISO9660) {
+                        Text("UDF 1.02").tag(false)
+                        Text("ISO 9660 + Joliet").tag(true)
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 190)
+                    Text("Enhanced mode allows either filesystem")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("UDF 1.02 (required for DSD Disc compatibility)")
+                        .foregroundColor(.secondary)
                 }
-                .pickerStyle(.menu)
-                .frame(width: 300)
                 Spacer()
             }
             
@@ -2545,6 +2945,7 @@ struct ContentView: View {
                 }
                 .pickerStyle(.menu)
                 .frame(width: 150)
+                Toggle("Multichannel", isOn: $state.sacdPlusMultichannelMode)
                 Spacer()
                 if state.sacdPlusEnhancedMode {
                     Text("DSF only, tags preserved")
@@ -2552,7 +2953,7 @@ struct ContentView: View {
                         .foregroundColor(.orange)
                 }
             }
-            
+
             HStack {
                 Text("Disc Capacity:")
                 Picker("", selection: $state.sacdPlusDiscCapacity) {
@@ -2574,42 +2975,111 @@ struct ContentView: View {
             )
 
             HStack {
-                Button(state.sacdPlusEnhancedMode ? "Add Tracks (DSF only)" : "Add Tracks (.dsf/.dff)") { 
+                Button("Add DSF Tracks") {
                     state.pickSACDPlusTracks() 
                 }
                 Button("Remove Selected") { removeSelectedSACDPlusTracks() }
                     .disabled(sacdPlusSelection.isEmpty)
+                Button("Move Up") { moveSelectedSACDPlusTracksUp() }
+                    .disabled(sacdPlusSelection.isEmpty)
+                Button("Move Down") { moveSelectedSACDPlusTracksDown() }
+                    .disabled(sacdPlusSelection.isEmpty)
                 Spacer()
+                Toggle("Disable Track Renaming", isOn: Binding(
+                    get: { !state.sacdPlusRenameTracks },
+                    set: { state.sacdPlusRenameTracks = !$0 }
+                ))
+            }
+            if !state.sacdPlusRenameTracks {
+                Label("Original filenames will be preserved. Playback order depends on the player sorting those filenames correctly.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             ZStack {
                 // Row striping background
                 VStack(spacing: 0) {
-                    ForEach(0..<8, id: \.self) { i in
+                    ForEach(0..<6, id: \.self) { i in
                         Rectangle()
                             .fill(i % 2 == 0 ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
-                            .frame(height: ((220 - 180) / 8) + 22) // fudge for ~even row height
+                            .frame(height: 28)
                     }
                 }
-                .frame(minHeight: 180, maxHeight: 220)
                 .allowsHitTesting(false)
                 // Table
                 Table(state.sacdPlusTracks, selection: $sacdPlusSelection) {
                     TableColumn("#") { item in
                         Text(sacdPlusIndex(of: item)).font(.system(.body, design: .monospaced))
-                    }.width(40)
+                    }.width(48)
                     TableColumn("File") { item in Text(item.title) }
-                    TableColumn("Ext") { item in Text(item.ext.uppercased()) }.width(60)
+                    TableColumn("Disc Filename") { item in
+                        Text(state.sacdPlusOutputFilename(for: item))
+                            .font(.system(.body, design: .monospaced))
+                    }
                     TableColumn("Path") { item in Text(item.url.path) }
                 }
-                .frame(minHeight: 180, maxHeight: 220)
                 // Overlay placeholder if empty
                 if state.sacdPlusTracks.isEmpty {
-                    Text("Drop files here…")
-                        .font(.title2)
+                    Text("Drop or Add Files")
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Color.clear)
+                }
+            }
+            .frame(minHeight: 150, maxHeight: 190)
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                handleTrackDrop(providers, target: .sacdPlusStereoDSF)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                if state.sacdPlusMultichannelMode {
+                    HStack {
+                        Text("Multichannel DSD Album")
+                            .font(.headline)
+                        Text("Folder: ALBUM02")
+                            .foregroundColor(.secondary)
+                        Button("Add Multichannel DSF…") { state.pickMultichannelDSFTracks() }
+                        Button("Remove Selected") {
+                            state.multichannelDSFTracks.removeAll { multichannelDSFSelection.contains($0.id) }
+                            multichannelDSFSelection.removeAll()
+                        }
+                        .disabled(multichannelDSFSelection.isEmpty)
+                        Spacer()
+                    }
+                    ZStack {
+                        VStack(spacing: 0) {
+                            ForEach(0..<6, id: \.self) { index in
+                                Rectangle()
+                                    .fill(index.isMultiple(of: 2) ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
+                                    .frame(height: 28)
+                            }
+                        }
+                        .allowsHitTesting(false)
+                        Table(state.multichannelDSFTracks, selection: $multichannelDSFSelection) {
+                            TableColumn("#") { item in
+                                Text(multichannelDSFIndex(of: item))
+                                    .font(.system(.body, design: .monospaced))
+                            }.width(48)
+                            TableColumn("File") { item in Text(item.title) }
+                            TableColumn("Disc Filename") { item in
+                                Text(state.multichannelDSFOutputFilename(for: item))
+                                    .font(.system(.body, design: .monospaced))
+                            }
+                            TableColumn("Path") { item in Text(item.url.path) }
+                        }
+                        if state.multichannelDSFTracks.isEmpty {
+                            Text("Drop or Add Files")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(minHeight: 150, maxHeight: 190)
+                    .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                        handleTrackDrop(providers, target: .sacdPlusMultichannelDSF)
+                    }
+                    Text("Written to DSD_DISC/\(state.multichannelAlbumName)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
 
@@ -2620,97 +3090,96 @@ struct ContentView: View {
                         .font(.headline)
                     Spacer()
                 }
-                Toggle("Enable Hybrid Mode", isOn: $state.hybridMode)
+                HStack(spacing: 24) {
+                    Toggle("Disable Hybrid Mode", isOn: Binding(
+                        get: { !state.hybridMode },
+                        set: { state.hybridMode = !$0 }
+                    ))
+                    Toggle("Maximum Compatibility Mode", isOn: Binding(
+                        get: { state.hybridFormat == "Maximum Compatibility" },
+                        set: { enabled in
+                            state.hybridFormat = enabled
+                                ? "Maximum Compatibility"
+                                : (state.uncompressedSupportMode ? "WAV" : "FLAC")
+                        }
+                    ))
+                    .disabled(!state.hybridMode || state.sacdPlusEnhancedMode)
+                    Toggle("Uncompressed Support Mode", isOn: $state.uncompressedSupportMode)
+                        .disabled(!state.hybridMode)
+                    Spacer()
+                }
+                if !state.hybridMode {
+                    Label("SACD+ was designed to provide both DSD and PCM file paths. Disabling Hybrid Mode creates a DSD-only disc and removes the PCM compatibility path.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if state.hybridMode {
-                    Text("Adds an MP3 or WAV copy of your album for non-SACD players. MP3 is lossy (smaller size), WAV is lossless (larger size).")
+                    Text(state.uncompressedSupportMode
+                         ? "Adds an uncompressed WAV copy of your album for compatible data-disc players. MP3 is available only in Maximum Compatibility Mode."
+                         : "Adds a lossless FLAC copy of your album for compatible data-disc players. MP3 is available only in Maximum Compatibility Mode.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if !state.sacdPlusEnhancedMode {
+                        Label(state.uncompressedSupportMode
+                              ? "Adds uncompressed WAV files plus MP3 compatibility copies. MP3 uses ALBUM02, or ALBUM03 when multichannel reserves ALBUM02. This has the largest disc-space requirement."
+                              : "Adds lossless FLAC files plus MP3 compatibility copies. MP3 uses ALBUM02, or ALBUM03 when multichannel reserves ALBUM02.",
+                              systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     HStack(alignment: .center, spacing: 12) {
-                        Text("Format:")
-                            .frame(width: 60, alignment: .leading)
-                        Picker("", selection: $state.hybridFormat) {
-                            if state.sacdPlusEnhancedMode {
-                                Text("FLAC (lossless)").tag("FLAC")
-                            } else {
-                                Text("MP3 (lossy)").tag("MP3")
-                                Text("WAV (lossless)").tag("WAV")
-                                Text("Dual PCM").tag("Dual PCM")
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(minWidth: 240)
-                        if state.hybridFormat == "Dual PCM" {
+                        if state.hybridFormat == "Maximum Compatibility" {
                             HStack(spacing: 8) {
-                                Button("Add WAV Tracks…") { 
-                                    state.pickWAVTracks() 
+                                Button(state.uncompressedSupportMode ? "Add WAV Tracks…" : "Add FLAC Tracks…") {
+                                    state.pickMaximumCompatibilityLosslessTracks()
                                 }
                                 Button("Add MP3 Tracks…") { 
                                     state.pickMP3Tracks() 
                                 }
                             }
                         } else {
-                            Button(state.sacdPlusEnhancedMode ? "Add FLAC Tracks…" : "Add Hybrid Tracks…") { 
+                            Button(state.uncompressedSupportMode ? "Add WAV Tracks…" : "Add FLAC Tracks…") {
                                 state.pickHybridTracks() 
                             }
                         }
                         Spacer()
                     }
-                    ZStack {
-                        VStack(spacing: 0) {
-                            ForEach(0..<8, id: \.self) { i in
-                                Rectangle()
-                                    .fill(i % 2 == 0 ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
-                                    .frame(height: ((220 - 180) / 8) + 22)
-                            }
+                    if state.uncompressedSupportMode {
+                        Label("WAV files are much larger than FLAC files and may cause the project to exceed the selected disc capacity.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if state.hybridFormat == "Maximum Compatibility" {
+                        VStack(alignment: .leading, spacing: 12) {
+                            maximumCompatibilityTable(
+                                title: state.uncompressedSupportMode ? "Stereo WAV Album" : "Stereo FLAC Album",
+                                tracks: state.maximumCompatibilityLosslessTracks,
+                                emptyMessage: "Drop or Add Files",
+                                albumName: state.sacdPlusAlbumName,
+                                dropTarget: .maximumCompatibilityLossless
+                            )
+                            maximumCompatibilityTable(
+                                title: "Stereo MP3 Album",
+                                tracks: state.mp3Tracks,
+                                emptyMessage: "Drop or Add Files",
+                                albumName: state.sacdPlusMultichannelMode ? "ALBUM03" : "ALBUM02",
+                                dropTarget: .maximumCompatibilityMP3
+                            )
                         }
-                        .frame(minHeight: 160, maxHeight: 200)
-                        .allowsHitTesting(false)
-                        if state.hybridFormat == "Dual PCM" {
-                            VStack(spacing: 8) {
-                                // WAV Table (first)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("WAV Tracks")
-                                        .font(.headline)
-                                        .foregroundColor(.primary)
-                                    Table(state.wavTracks) {
-                                        TableColumn("#") { item in
-                                            Text(wavIndex(of: item)).font(.system(.body, design: .monospaced))
-                                        }.width(40)
-                                        TableColumn("File") { item in Text(item.title) }
-                                        TableColumn("Path") { item in Text(item.url.path) }
-                                    }
-                                    .frame(minHeight: 60, maxHeight: 80)
-                                    if state.wavTracks.isEmpty {
-                                        Text("No WAV files added.")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .frame(maxWidth: .infinity, alignment: .center)
-                                    }
-                                }
-                                
-                                // MP3 Table (second)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("MP3 Tracks")
-                                        .font(.headline)
-                                        .foregroundColor(.primary)
-                                    Table(state.mp3Tracks) {
-                                        TableColumn("#") { item in
-                                            Text(mp3Index(of: item)).font(.system(.body, design: .monospaced))
-                                        }.width(40)
-                                        TableColumn("File") { item in Text(item.title) }
-                                        TableColumn("Path") { item in Text(item.url.path) }
-                                    }
-                                    .frame(minHeight: 60, maxHeight: 80)
-                                    if state.mp3Tracks.isEmpty {
-                                        Text("No MP3 files added.")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .frame(maxWidth: .infinity, alignment: .center)
-                                    }
+                    } else {
+                        ZStack {
+                            VStack(spacing: 0) {
+                                ForEach(0..<6, id: \.self) { index in
+                                    Rectangle()
+                                        .fill(index.isMultiple(of: 2) ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
+                                        .frame(height: 28)
                                 }
                             }
-                        } else {
+                            .allowsHitTesting(false)
                             Table(state.hybridTracks) {
                                 TableColumn("#") { item in
                                     Text(hybridIndex(of: item)).font(.system(.body, design: .monospaced))
@@ -2721,15 +3190,75 @@ struct ContentView: View {
                             }
                             .frame(minHeight: 160, maxHeight: 200)
                             if state.hybridTracks.isEmpty {
-                                Text("No hybrid files added.")
-                                    .font(.title3)
+                                Text("Drop or Add Files")
                                     .foregroundColor(.secondary)
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .background(Color.clear)
                             }
                         }
+                        .frame(minHeight: 150, maxHeight: 190)
+                        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                            handleTrackDrop(providers, target: .hybridStereoLossless)
+                        }
                     }
-                    .frame(minHeight: 160, maxHeight: 200)
+                    if state.sacdPlusMultichannelMode {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Multichannel PCM Album")
+                                    .font(.headline)
+                                Button(state.uncompressedSupportMode ? "Add Multichannel WAV…" : "Add Multichannel FLAC…") {
+                                    state.pickMultichannelLosslessTracks()
+                                }
+                                Button("Remove Selected") {
+                                    state.multichannelLosslessTracks.removeAll { multichannelPCMSelection.contains($0.id) }
+                                    multichannelPCMSelection.removeAll()
+                                }
+                                .disabled(multichannelPCMSelection.isEmpty)
+                                Spacer()
+                            }
+                            ZStack {
+                                VStack(spacing: 0) {
+                                    ForEach(0..<6, id: \.self) { index in
+                                        Rectangle()
+                                            .fill(index.isMultiple(of: 2) ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
+                                            .frame(height: 28)
+                                    }
+                                }
+                                .allowsHitTesting(false)
+                                Table(state.multichannelLosslessTracks, selection: $multichannelPCMSelection) {
+                                    TableColumn("#") { item in
+                                        Text(multichannelPCMIndex(of: item))
+                                            .font(.system(.body, design: .monospaced))
+                                    }.width(48)
+                                    TableColumn("File") { item in Text(item.title) }
+                                    TableColumn("Disc Filename") { item in
+                                        Text(state.multichannelPCMOutputFilename(for: item))
+                                            .font(.system(.body, design: .monospaced))
+                                    }
+                                    TableColumn("Path") { item in Text(item.url.path) }
+                                }
+                                if state.multichannelLosslessTracks.isEmpty {
+                                    Text("Drop or Add Files")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .frame(minHeight: 150, maxHeight: 190)
+                            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                                handleTrackDrop(providers, target: .hybridMultichannelLossless)
+                            }
+                            Text("Written to PCM_DISC/\(state.multichannelAlbumName). MP3 remains in the separate stereo compatibility album.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if state.sacdPlusMultichannelMode && state.hybridFormat == "Maximum Compatibility" {
+                        Label("Multichannel Mode plus Maximum Compatibility Mode requires stereo DSF, multichannel DSF, lossless FLAC/WAV support paths, and MP3 copies. This is a massive storage requirement for most albums and may not fit on the selected disc capacity.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.headline)
+                            .foregroundColor(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 8)
+                    }
                 }
             }
 
@@ -2744,6 +3273,97 @@ struct ContentView: View {
         .padding(12)
     }
 
+    private func maximumCompatibilityTable(
+        title: String,
+        tracks: [TrackItem],
+        emptyMessage: String,
+        albumName: String,
+        dropTarget: TrackDropTarget
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            ZStack {
+                VStack(spacing: 0) {
+                    ForEach(0..<6, id: \.self) { index in
+                        Rectangle()
+                            .fill(index.isMultiple(of: 2) ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
+                            .frame(height: 28)
+                    }
+                }
+                .allowsHitTesting(false)
+                Table(tracks) {
+                    TableColumn("#") { item in
+                        Text(maximumCompatibilityIndex(of: item, in: tracks))
+                            .font(.system(.body, design: .monospaced))
+                    }.width(48)
+                    TableColumn("File") { item in Text(item.title) }
+                    TableColumn("Disc Filename") { item in
+                        Text(maximumCompatibilityOutputFilename(for: item, in: tracks))
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    TableColumn("Path") { item in Text(item.url.path) }
+                }
+                if tracks.isEmpty {
+                    Text(emptyMessage)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .frame(minHeight: 150, maxHeight: 190)
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                handleTrackDrop(providers, target: dropTarget)
+            }
+            Text("Written to PCM_DISC/\(albumName)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private func handleTrackDrop(_ providers: [NSItemProvider], target: TrackDropTarget) -> Bool {
+        let urlProviders = providers.filter { $0.canLoadObject(ofClass: URL.self) }
+        guard !urlProviders.isEmpty else { return false }
+
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var droppedURLs: [URL] = []
+        for provider in urlProviders {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { object, _ in
+                if let url = object {
+                    lock.lock()
+                    droppedURLs.append(url)
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            state.addDroppedTracks(from: droppedURLs, to: target)
+        }
+        return true
+    }
+
+    private func maximumCompatibilityIndex(of item: TrackItem, in tracks: [TrackItem]) -> String {
+        guard let index = tracks.firstIndex(of: item) else { return "---" }
+        return String(format: "%03d", index + 1)
+    }
+
+    private func maximumCompatibilityOutputFilename(for item: TrackItem, in tracks: [TrackItem]) -> String {
+        guard let index = tracks.firstIndex(of: item) else { return "—" }
+        if !state.sacdPlusRenameTracks { return item.url.lastPathComponent }
+        return String(format: "TRACK%03d.%@", index + 1, item.ext.uppercased())
+    }
+
+    private func multichannelDSFIndex(of item: TrackItem) -> String {
+        guard let index = state.multichannelDSFTracks.firstIndex(of: item) else { return "---" }
+        return String(format: "%03d", index + 1)
+    }
+
+    private func multichannelPCMIndex(of item: TrackItem) -> String {
+        guard let index = state.multichannelLosslessTracks.firstIndex(of: item) else { return "---" }
+        return String(format: "%03d", index + 1)
+    }
+
     private func hybridIndex(of item: TrackItem) -> String {
         if let i = state.hybridTracks.firstIndex(of: item) { return String(format: "%02d", i + 1) }
         return "--"
@@ -2754,13 +3374,13 @@ struct ContentView: View {
         return "--"
     }
     
-    private func wavIndex(of item: TrackItem) -> String {
-        if let i = state.wavTracks.firstIndex(of: item) { return String(format: "%02d", i + 1) }
+    private func maximumCompatibilityLosslessIndex(of item: TrackItem) -> String {
+        if let i = state.maximumCompatibilityLosslessTracks.firstIndex(of: item) { return String(format: "%02d", i + 1) }
         return "--"
     }
 
     private func sacdPlusIndex(of item: TrackItem) -> String {
-        if let i = state.sacdPlusTracks.firstIndex(of: item) { return String(format: "%02d", i + 1) }
+        if let i = state.sacdPlusTracks.firstIndex(of: item) { return String(format: "%03d", i + 1) }
         return "--"
     }
 
@@ -2769,11 +3389,183 @@ struct ContentView: View {
         sacdPlusSelection.removeAll()
     }
 
+    private func moveSelectedSACDPlusTracksUp() {
+        guard state.sacdPlusTracks.count > 1 else { return }
+        for index in state.sacdPlusTracks.indices where index > 0 {
+            let currentID = state.sacdPlusTracks[index].id
+            let previousID = state.sacdPlusTracks[index - 1].id
+            if sacdPlusSelection.contains(currentID) && !sacdPlusSelection.contains(previousID) {
+                state.sacdPlusTracks.swapAt(index, index - 1)
+            }
+        }
+    }
+
+    private func moveSelectedSACDPlusTracksDown() {
+        guard state.sacdPlusTracks.count > 1 else { return }
+        for index in state.sacdPlusTracks.indices.reversed() where index < state.sacdPlusTracks.count - 1 {
+            let currentID = state.sacdPlusTracks[index].id
+            let nextID = state.sacdPlusTracks[index + 1].id
+            if sacdPlusSelection.contains(currentID) && !sacdPlusSelection.contains(nextID) {
+                state.sacdPlusTracks.swapAt(index, index + 1)
+            }
+        }
+    }
+
+    // MARK: SACDx View
+
+    private var sacdXView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("SACDx")
+                .font(.largeTitle.bold())
+            Text("Creates a data disc containing an original ISO backup plus directly accessible DSF album paths. SACDx does not include Hybrid Mode or PCM_DISC.")
+                .foregroundColor(.secondary)
+
+            HStack {
+                Text("Volume Name:")
+                TextField("SACDX", text: $state.sacdXVolumeName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                Toggle("Multichannel", isOn: $state.sacdXMultichannelMode)
+                Toggle("Disable Track Renaming", isOn: Binding(
+                    get: { !state.sacdXRenameTracks },
+                    set: { state.sacdXRenameTracks = !$0 }
+                ))
+                Spacer()
+            }
+            HStack {
+                Text("Disc Capacity:")
+                Picker("", selection: $state.sacdXDiscCapacity) {
+                    ForEach(SACDPlusDiscCapacity.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 200)
+                Spacer()
+            }
+            SpaceUsageBar(
+                projectSize: state.calculateProjectSize(),
+                capacity: state.sacdXDiscCapacity.bytes,
+                capacityName: state.sacdXDiscCapacity.rawValue,
+                formatBytes: state.formatBytes
+            )
+
+            GroupBox("BACKUP Folder") {
+                HStack {
+                    Button("Choose Backup ISO…") { state.pickSACDxBackupISO() }
+                    Text(state.sacdXBackupISO?.path ?? "No ISO selected")
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
+
+            sacdXTrackSection(
+                title: "Stereo DSD Album — DSD_DISC/ALBUM01",
+                tracks: state.sacdXStereoTracks,
+                selection: $sacdXStereoSelection,
+                multichannel: false,
+                dropTarget: .sacdXStereoDSF
+            )
+            if state.sacdXMultichannelMode {
+                sacdXTrackSection(
+                    title: "Multichannel DSD Album — DSD_DISC/ALBUM02",
+                    tracks: state.sacdXMultichannelTracks,
+                    selection: $sacdXMultichannelSelection,
+                    multichannel: true,
+                    dropTarget: .sacdXMultichannelDSF
+                )
+            }
+
+            HStack {
+                Spacer()
+                Button {
+                    Task { await state.buildSACDx() }
+                } label: {
+                    Label("Build SACDx ISO", systemImage: "opticaldisc")
+                }
+                .disabled(state.isWorking || state.sacdXBackupISO == nil || state.sacdXStereoTracks.isEmpty)
+            }
+        }
+        .padding(12)
+    }
+
+    private func sacdXTrackSection(
+        title: String,
+        tracks: [TrackItem],
+        selection: Binding<Set<TrackItem.ID>>,
+        multichannel: Bool,
+        dropTarget: TrackDropTarget
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title).font(.headline)
+                Button("Add DSF Tracks") { state.pickSACDxTracks(multichannel: multichannel) }
+                Button("Remove Selected") {
+                    if multichannel {
+                        state.sacdXMultichannelTracks.removeAll { selection.wrappedValue.contains($0.id) }
+                    } else {
+                        state.sacdXStereoTracks.removeAll { selection.wrappedValue.contains($0.id) }
+                    }
+                    selection.wrappedValue.removeAll()
+                }
+                .disabled(selection.wrappedValue.isEmpty)
+                Spacer()
+            }
+            ZStack {
+                VStack(spacing: 0) {
+                    ForEach(0..<6, id: \.self) { index in
+                        Rectangle()
+                            .fill(index.isMultiple(of: 2) ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
+                            .frame(height: 28)
+                    }
+                }
+                .allowsHitTesting(false)
+                Table(tracks, selection: selection) {
+                    TableColumn("#") { item in
+                        Text(sacdXIndex(of: item, in: tracks)).font(.system(.body, design: .monospaced))
+                    }.width(48)
+                    TableColumn("File") { item in Text(item.title) }
+                    TableColumn("Disc Filename") { item in
+                        Text(sacdXOutputFilename(for: item, in: tracks)).font(.system(.body, design: .monospaced))
+                    }
+                    TableColumn("Path") { item in Text(item.url.path) }
+                }
+                if tracks.isEmpty { Text("Drop or Add Files").foregroundColor(.secondary) }
+            }
+            .frame(minHeight: 150, maxHeight: 190)
+            .onDrop(of: [.fileURL], isTargeted: nil) { handleTrackDrop($0, target: dropTarget) }
+        }
+    }
+
+    private func sacdXIndex(of item: TrackItem, in tracks: [TrackItem]) -> String {
+        guard let index = tracks.firstIndex(of: item) else { return "---" }
+        return String(format: "%03d", index + 1)
+    }
+
+    private func sacdXOutputFilename(for item: TrackItem, in tracks: [TrackItem]) -> String {
+        guard let index = tracks.firstIndex(of: item) else { return "—" }
+        return state.sacdXRenameTracks ? String(format: "TRACK%03d.dsf", index + 1) : item.url.lastPathComponent
+    }
+
     // MARK: SACD-R View
 
     private var sacdRView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            HStack(alignment: .top, spacing: 16) {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Rights & Responsible Use", systemImage: "shield.lefthalf.filled")
+                            .font(.headline)
+                            .foregroundColor(.orange)
+                        Text("SACD and its related technologies and trademarks belong to their respective rights holders, including Sony and Philips. This independent application is not affiliated with, endorsed by, or sponsored by those companies.")
+                        Text("This experimental tool is intended only for authoring your own original material with a lawfully obtained donor SACD template that you are authorized to use. It must not be used to copy, circumvent protections on, reproduce, or distribute unauthorized SACD content. You are responsible for complying with all applicable rights and laws.")
+                    }
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+                }
+                .frame(maxWidth: 680, alignment: .leading)
                 Spacer()
                 Image("SACDRLogo")
                     .resizable()
@@ -2850,13 +3642,12 @@ struct ContentView: View {
                     ZStack {
                         // Row striping background
                         VStack(spacing: 0) {
-                            ForEach(0..<8, id: \.self) { i in
+                            ForEach(0..<6, id: \.self) { i in
                                 Rectangle()
                                     .fill(i % 2 == 0 ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .windowBackgroundColor))
-                                    .frame(height: ((220 - 180) / 8) + 22)
+                                    .frame(height: 28)
                             }
                         }
-                        .frame(minHeight: 180, maxHeight: 220)
                         .allowsHitTesting(false)
                         // Table
                         Table(state.sacdTracks, selection: $sacdSelection) {
@@ -2867,15 +3658,17 @@ struct ContentView: View {
                             TableColumn("Ext") { item in Text(item.ext.uppercased()) }.width(60)
                             TableColumn("Path") { item in Text(item.url.path) }
                         }
-                        .frame(minHeight: 180, maxHeight: 220)
                         // Overlay placeholder if empty
                         if state.sacdTracks.isEmpty {
-                            Text("Drop files here…")
-                                .font(.title2)
+                            Text("Drop or Add Files")
                                 .foregroundColor(.secondary)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .background(Color.clear)
                         }
+                    }
+                    .frame(minHeight: 150, maxHeight: 190)
+                    .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                        handleTrackDrop(providers, target: .sacdRDSF)
                     }
 
                     HStack {
@@ -2944,6 +3737,12 @@ struct ContentView: View {
                                 .fontWeight(.semibold)
                                 .foregroundColor(.green)
                             Spacer()
+                            Button {
+                                state.burnLastISOWithFinder()
+                            } label: {
+                                Label("Burn ISO with Finder…", systemImage: "opticaldiscdrive")
+                            }
+                            .disabled(state.lastBuiltISOURL == nil)
                             Text("✓")
                                 .font(.caption)
                                 .fontWeight(.bold)
@@ -2994,6 +3793,17 @@ struct ContentView: View {
     private var descriptionPanel: some View {
         Group {
             switch state.mode {
+            case .sacdX:
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("SACDx").font(.headline).bold()
+                    Text("Preserves a complete ISO in BACKUP while exposing DSF tracks through a deterministic DSD_DISC structure.")
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Disc layout:").font(.subheadline.bold())
+                    Text("BACKUP/<selected ISO>\nDSD_DISC/ALBUM01/<stereo DSF>\nDSD_DISC/ALBUM02/<multichannel DSF, optional>")
+                        .font(.caption.monospaced())
+                    Label("No Hybrid Mode, PCM_DISC, FLAC, WAV, or MP3 paths", systemImage: "info.circle")
+                        .font(.caption)
+                }
             case .sacdR:
                 VStack(alignment: .leading, spacing: 10) {
                     Text("SACD-R Discs")
@@ -3005,7 +3815,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Label("Donor SACD folder (must contain MASTER.TOC, 2CH/, optional MCH/)", systemImage: "folder")
                             .font(.caption)
-                        Label("DSD tracks (.dsf/.dff) to inject", systemImage: "music.note")
+                        Label("DSF tracks to inject", systemImage: "music.note")
                             .font(.caption)
                         Label("DST encoder binary (required for MCH or when DST forced)", systemImage: "gear")
                             .font(.caption)
@@ -3040,9 +3850,10 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Label("Flat file structure (no folders)", systemImage: "folder")
                             Label("DSF files only (required)", systemImage: "music.note")
+                            Label("Optional multichannel DSF and lossless support paths", systemImage: "speaker.wave.3")
                             Label("All metadata preserved", systemImage: "tag")
                             Label("FLAC hybrid support with tags", systemImage: "waveform")
-                            Label("Dual PCM mode (MP3 + WAV together)", systemImage: "square.split.2x2")
+                            Label("Optional uncompressed WAV support", systemImage: "externaldrive")
                         }
                         .font(.caption)
                         
@@ -3053,8 +3864,9 @@ struct ContentView: View {
                             Text("Requirements & Limitations").font(.subheadline).bold()
                         }
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("• DSF files ONLY - no DFF support.")
-                            Text("• Hybrid mode requires FLAC files.")
+                            Text("• DSF files only.")
+                            Text("• Hybrid mode uses FLAC unless Uncompressed Support Mode is enabled.")
+                            Text("• WAV support uses substantially more disc space.")
                             Text("• No traditional folder organization.")
                             Text("• May not work with older SACD players.")
                         }
@@ -3068,15 +3880,16 @@ struct ContentView: View {
                         Text("Build UDF 1.02 disc images with DSD tracks for playback on compatible hardware and software. Simple folder structure, easy to author.")
                             .fixedSize(horizontal: false, vertical: true)
                             
-                        Text("SACD+ is an evolution of the classic DSD DISC concept, enhanced with optional Hybrid Mode. This innovative feature lets you include MP3, WAV, or both formats (Dual PCM) alongside the original DSD content — a modern, flexible approach for both audiophile playback and everyday compatibility.")
+                        Text("SACD+ is an evolution of the classic DSD DISC concept. Hybrid Mode adds lossless FLAC support, with optional uncompressed WAV support. Maximum Compatibility Mode pairs MP3 with the selected lossless path: FLAC by default or WAV in Uncompressed Support Mode.")
                             .fixedSize(horizontal: false, vertical: true)
                             
                         Text("How it works:")
                             .font(.subheadline).bold()
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("• Add your DSD tracks (.dsf/.dff) to an album folder.")
-                            Text("• Each track is renamed to TRACKxx.ext.")
+                            Text("• Add your DSF tracks to an album folder.")
+                            Text("• Each track is renamed to TRACKxxx.ext.")
                             Text("• Output is a standard UDF ISO image.")
+                            Text("• Multichannel Mode supports DSF with FLAC or WAV, but never MP3.")
                         }
                         .font(.caption)
                         

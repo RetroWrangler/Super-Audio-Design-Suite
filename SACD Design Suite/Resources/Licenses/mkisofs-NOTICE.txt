@@ -1,0 +1,24 @@
+mkisofs / dvdrtools notice
+
+SACD Design Suite includes the mkisofs executable from dvdrtools 0.2.1.
+dvdrtools is licensed under the GNU General Public License, version 2 or later.
+The complete license is included as GPL-2.0.txt.
+
+Project homepage:
+https://savannah.nongnu.org/projects/dvdrtools/
+
+Upstream source archive:
+https://download.savannah.gnu.org/releases/dvdrtools/dvdrtools-0.2.1.tar.gz
+SHA-256: 053d0f277f69b183f9c8e8c8b09b94d5bb4a1de6d9b122c0e6c00cc6593dfb46
+
+The bundled universal macOS executable combines the mkisofs executables from
+the Homebrew arm64 Sequoia and x86_64 Sonoma bottles for
+dvdrtools 0.2.1. The corresponding Homebrew-patched source is included at:
+
+dvdrtools-0.2.1-homebrew-patched-source.tar.gz
+
+Corresponding-source archive SHA-256:
+ccb47e7f4546446e63618c0c4a0bbc30447b01e79fb86f9dfdd2873db3989045
+
+mkisofs remains a separate executable invoked by SACD Design Suite. Users may
+replace the bundled mkisofs resource with a compatible modified build.
