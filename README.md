@@ -2,7 +2,8 @@
 
 A macOS application for authoring Super Audio CDs (SACD) and SACD+ discs.
 
-## **What is SACD+?**
+What is SACD+?
+--------------
 
 **SACD+ is a new, advanced disc format that builds upon Sony's DSD DISC specification, combining high-quality DSD audio with additional PCM compatibility (If hybrid mode is enabled) layers.** Unlike traditional SACDs, SACD+ discs include dedicated PCM build folders that can be accessed by:
 
@@ -24,30 +25,8 @@ The SACD+ authoring pipeline is complete and working:
 
 ALL MODES REQUIRE DVD+R OR DVD+R DL
 
-## SACDx
-
-SACDx creates a deterministic UDF data disc containing a complete backup ISO
-and a directly accessible DSD Disc path. It intentionally does not inherit
-Hybrid Mode and does not create `PCM_DISC`, FLAC, WAV, or MP3 paths.
-
-```text
-SACDx Disc Root
-├── BACKUP
-│   └── <selected backup>.iso
-└── DSD_DISC
-    ├── ALBUM01
-    │   ├── TRACK001.dsf
-    │   └── TRACK002.dsf
-    └── ALBUM02                 optional multichannel path
-        ├── TRACK001.dsf
-        └── TRACK002.dsf
-```
-
-The embedded backup ISO, stereo DSF files, and optional multichannel DSF files
-all count toward disc capacity. SACDx uses the bundled `mkisofs` authoring and
-directory-order verification used by SACD+.
-
-## SACD+ Format Details
+SACD+ Details
+-------------
 
 ### **Disc Structure**
 SACD+ discs use Sony's DSD DISC format as the foundation with additional PCM build folders:
@@ -163,7 +142,34 @@ preserved and playback order depends on the player interpreting those names.
 - **Output**: ISO image ready for DVD-R DL burning
 - **Metadata**: Embedded track and album information
 
-## Experimental SACD Mode
+What is SACDx?
+--------------
+
+SACDx creates a deterministic UDF data disc containing a complete backup ISO
+and a directly accessible DSD Disc path. It intentionally does not inherit
+Hybrid Mode and does not create `PCM_DISC`, FLAC, WAV, or MP3 paths.
+
+### SACDx Formatting Details
+
+```text
+SACDx Disc Root
+├── BACKUP
+│   └── <selected backup>.iso
+└── DSD_DISC
+    ├── ALBUM01                 stereo DSF path
+    │   ├── TRACK001.dsf
+    │   └── TRACK002.dsf
+    └── ALBUM02                 optional multichannel DSF path
+        ├── TRACK001.dsf
+        └── TRACK002.dsf
+```
+
+The embedded backup ISO, stereo DSF files, and optional multichannel DSF files
+all count toward disc capacity. SACDx uses the bundled `mkisofs` authoring and
+directory-order verification used by SACD+.
+
+Experimental SACD Mode
+----------------------
 
 Traditional SACD authoring is intentionally kept out of the primary SACD+
 workflow. Select **Enter Experimental Mode** in the application’s top bar to
@@ -228,7 +234,7 @@ executable in accordance with the GPL.
 
 ## Contributing
 
-[Add contribution guidelines here]
+A contribution package is available upon request.
 
 ---
 
