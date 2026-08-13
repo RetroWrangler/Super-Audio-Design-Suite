@@ -13,6 +13,8 @@ private let selectedOpticalDriveNameKey = "selectedOpticalDriveName"
 let minimalistModeKey = "minimalistMode"
 let sacdPlusFocusModeKey = "sacdPlusFocusMode"
 let startupInterfaceModeKey = "startupInterfaceMode"
+let experimentalModeKey = "experimentalMode"
+let experimentalModeLockedKey = "experimentalModeLocked"
 
 private struct OpticalDriveChoice: Identifiable, Hashable {
     let id: String
@@ -131,12 +133,39 @@ private struct ModeSettingsView: View {
     }
 }
 
+private struct LockdownSettingsView: View {
+    @AppStorage(experimentalModeLockedKey) private var experimentalModeLocked = false
+
+    var body: some View {
+        Form {
+            Section("Experimental Mode Lockdown") {
+                Toggle("Lock Experimental Mode", isOn: Binding(
+                    get: { experimentalModeLocked },
+                    set: { enabled in
+                        if enabled { experimentalModeLocked = true }
+                    }
+                ))
+                .disabled(experimentalModeLocked)
+
+                Text(experimentalModeLocked
+                     ? "Experimental Mode is locked on. This setting can only be cleared with Reset Defaults in the Mode settings."
+                     : "Locks Experimental Mode on across launches. After locking, the control cannot be turned off individually.")
+                    .font(.caption)
+                    .foregroundColor(experimentalModeLocked ? .orange : .secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
 private struct AppSettingsView: View {
     @AppStorage(selectedOpticalDrivePathKey) private var selectedDrivePath = ""
     @AppStorage(selectedOpticalDriveNameKey) private var selectedDriveName = "Automatic"
     @AppStorage(minimalistModeKey) private var minimalistMode = true
     @AppStorage(sacdPlusFocusModeKey) private var sacdPlusFocusMode = true
     @AppStorage(startupInterfaceModeKey) private var startupInterfaceMode = "super"
+    @AppStorage(experimentalModeKey) private var experimentalMode = false
+    @AppStorage(experimentalModeLockedKey) private var experimentalModeLocked = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -145,6 +174,10 @@ private struct AppSettingsView: View {
                     .tabItem { Label("Drive", systemImage: "opticaldiscdrive") }
                 ModeSettingsView()
                     .tabItem { Label("Mode", systemImage: "switch.2") }
+                if experimentalMode {
+                    LockdownSettingsView()
+                        .tabItem { Label("Lockdown", systemImage: "lock.fill") }
+                }
             }
             Divider()
             HStack {
@@ -162,6 +195,8 @@ private struct AppSettingsView: View {
         minimalistMode = false
         sacdPlusFocusMode = false
         startupInterfaceMode = "standard"
+        experimentalModeLocked = false
+        experimentalMode = false
     }
 }
 

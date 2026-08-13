@@ -1096,6 +1096,7 @@ final class AuthoringState: ObservableObject {
 
     // Hybrid Mode (SACD+ only)
     @Published var hybridMode: Bool = true
+    @Published var sacdPlusPCMRenameTracks: Bool = true
     @Published var hybridFormat: String = "FLAC"
     @Published var uncompressedSupportMode: Bool = false {
         didSet {
@@ -1513,12 +1514,20 @@ final class AuthoringState: ObservableObject {
 
     func multichannelPCMOutputFilename(for item: TrackItem) -> String {
         guard let index = multichannelLosslessTracks.firstIndex(of: item) else { return "—" }
-        if !sacdPlusRenameTracks { return item.url.lastPathComponent }
+        if !sacdPlusPCMRenameTracks { return item.url.lastPathComponent }
         return String(format: "TRACK%03d.%@", index + 1, item.ext.uppercased())
     }
 
     private func authoredFilename(for item: TrackItem, index: Int, enhancedTrackNumber: Int? = nil) -> String {
         guard sacdPlusRenameTracks else { return item.url.lastPathComponent }
+        if let enhancedTrackNumber {
+            return String(format: "%03d-%@.%@", enhancedTrackNumber, item.title, item.ext)
+        }
+        return String(format: "TRACK%03d.%@", index + 1, item.ext)
+    }
+
+    private func authoredPCMFilename(for item: TrackItem, index: Int, enhancedTrackNumber: Int? = nil) -> String {
+        guard sacdPlusPCMRenameTracks else { return item.url.lastPathComponent }
         if let enhancedTrackNumber {
             return String(format: "%03d-%@.%@", enhancedTrackNumber, item.title, item.ext)
         }
@@ -1996,7 +2005,7 @@ final class AuthoringState: ObservableObject {
                     await updateProgress(0.55, task: "Processing \(supportFormat) tracks...")
                     let dsfCount = sacdPlusTracks.count
                     for (idx, item) in hybridTracks.enumerated() {
-                        let filename = authoredFilename(for: item, index: idx, enhancedTrackNumber: dsfCount + idx + 1)
+                        let filename = authoredPCMFilename(for: item, index: idx, enhancedTrackNumber: dsfCount + idx + 1)
                         let dest = root.appendingPathComponent(filename)
                         try fm.copyItem(at: item.url, to: dest)
                         appendLog("Added \(dest.lastPathComponent) (\(supportFormat), original filename preserved)")
@@ -2049,7 +2058,7 @@ final class AuthoringState: ObservableObject {
                         let multichannelHybridAlbum = hybridRoot.appendingPathComponent(multichannelAlbumName)
                         try fm.createDirectory(at: multichannelHybridAlbum, withIntermediateDirectories: true)
                         for (idx, item) in multichannelLosslessTracks.enumerated() {
-                            let dest = multichannelHybridAlbum.appendingPathComponent(authoredFilename(for: item, index: idx))
+                            let dest = multichannelHybridAlbum.appendingPathComponent(authoredPCMFilename(for: item, index: idx))
                             try await stripMetadata(input: item.url, output: dest)
                         }
                         appendLog("Multichannel lossless path created in PCM_DISC/\(multichannelAlbumName)")
@@ -2063,7 +2072,7 @@ final class AuthoringState: ObservableObject {
                         // Process the selected lossless support format first
                         let totalHybridTracks = maximumCompatibilityLosslessTracks.count + mp3Tracks.count
                         for (idx, item) in maximumCompatibilityLosslessTracks.enumerated() {
-                            let dest = hybridAlbum.appendingPathComponent(authoredFilename(for: item, index: idx))
+                            let dest = hybridAlbum.appendingPathComponent(authoredPCMFilename(for: item, index: idx))
                             try await stripMetadata(input: item.url, output: dest)
                             appendLog("Added \(losslessFormat) \(dest.lastPathComponent) to PCM_DISC without tags")
                             let progress = 0.55 + (Double(idx + 1) / Double(totalHybridTracks)) * 0.20
@@ -2072,7 +2081,7 @@ final class AuthoringState: ObservableObject {
                         
                         // MP3 compatibility copies use a dedicated album path.
                         for (idx, item) in mp3Tracks.enumerated() {
-                            let dest = mp3Album.appendingPathComponent(authoredFilename(for: item, index: idx))
+                            let dest = mp3Album.appendingPathComponent(authoredPCMFilename(for: item, index: idx))
                             try await stripMetadata(input: item.url, output: dest)
                             appendLog("Added MP3 \(dest.lastPathComponent) to PCM_DISC/\(mp3AlbumName) without tags")
                             let progress = 0.55 + (Double(maximumCompatibilityLosslessTracks.count + idx + 1) / Double(totalHybridTracks)) * 0.20
@@ -2084,7 +2093,7 @@ final class AuthoringState: ObservableObject {
                         // Regular single format processing
                         for (idx, item) in hybridTracks.enumerated() {
                             let ext = item.ext
-                            let dest = hybridAlbum.appendingPathComponent(authoredFilename(for: item, index: idx))
+                            let dest = hybridAlbum.appendingPathComponent(authoredPCMFilename(for: item, index: idx))
                             try await stripMetadata(input: item.url, output: dest)
                             appendLog("Added hybrid \(dest.lastPathComponent) (\(ext.uppercased())) to PCM_DISC without tags")
                         }
@@ -2997,6 +3006,8 @@ struct ContentView: View {
     @AppStorage(minimalistModeKey) private var minimalistMode = true
     @AppStorage(sacdPlusFocusModeKey) private var sacdPlusFocusMode = true
     @AppStorage(startupInterfaceModeKey) private var startupInterfaceMode = "super"
+    @AppStorage(experimentalModeKey) private var experimentalMode = false
+    @AppStorage(experimentalModeLockedKey) private var experimentalModeLocked = false
     @StateObject private var state = AuthoringState()
     @State private var sacdPlusSelection = Set<TrackItem.ID>()
     @State private var multichannelDSFSelection = Set<TrackItem.ID>()
@@ -3006,7 +3017,6 @@ struct ContentView: View {
     @State private var sacdXMultichannelSelection = Set<TrackItem.ID>()
     @State private var showLog: Bool = false
     @State private var showHelpPane: Bool = false
-    @State private var experimentalMode: Bool = false
     @State private var showExperimentalModeWarning: Bool = false
     @State private var experimentalTriggerClickCount: Int = 0
     @State private var experimentalTriggerLastClick: Date? = nil
@@ -3068,7 +3078,7 @@ struct ContentView: View {
         .onChange(of: minimalistMode) { _, enabled in
             if enabled {
                 showHelpPane = false
-                experimentalMode = false
+                if !experimentalModeLocked { experimentalMode = false }
                 state.sacdXDirectBurnMode = false
                 if state.mode == .sacdR { state.mode = .sacdPlus }
             }
@@ -3076,7 +3086,10 @@ struct ContentView: View {
         .onChange(of: sacdPlusFocusMode) { _, enabled in
             if enabled && state.mode == .sacdX { state.mode = .sacdPlus }
         }
-        .onAppear { applyStartupInterfaceMode() }
+        .onAppear {
+            if experimentalModeLocked { experimentalMode = true }
+            applyStartupInterfaceMode()
+        }
     }
 
     private var writableOpticalDrives: [DRDevice] {
@@ -3394,7 +3407,18 @@ struct ContentView: View {
                     .disabled(!state.hybridMode || state.sacdPlusEnhancedMode)
                     Toggle("Uncompressed Support Mode", isOn: $state.uncompressedSupportMode)
                         .disabled(!state.hybridMode)
+                    Toggle("Disable PCM Track Renaming", isOn: Binding(
+                        get: { !state.sacdPlusPCMRenameTracks },
+                        set: { state.sacdPlusPCMRenameTracks = !$0 }
+                    ))
+                    .disabled(!state.hybridMode)
                     Spacer()
+                }
+                if state.hybridMode && !state.sacdPlusPCMRenameTracks {
+                    Label("Original PCM filenames will be preserved. PCM playback order depends on the player sorting those filenames correctly.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if !state.hybridMode {
                     Label("SACD+ was designed to provide both DSD and PCM file paths. Disabling Hybrid Mode creates a DSD-only disc and removes the PCM compatibility path.", systemImage: "exclamationmark.triangle.fill")
@@ -3645,7 +3669,7 @@ struct ContentView: View {
 
     private func maximumCompatibilityOutputFilename(for item: TrackItem, in tracks: [TrackItem]) -> String {
         guard let index = tracks.firstIndex(of: item) else { return "—" }
-        if !state.sacdPlusRenameTracks { return item.url.lastPathComponent }
+        if !state.sacdPlusPCMRenameTracks { return item.url.lastPathComponent }
         return String(format: "TRACK%03d.%@", index + 1, item.ext.uppercased())
     }
 
@@ -4148,6 +4172,7 @@ struct ContentView: View {
     }
 
     private func registerExperimentalTriggerClick() {
+        guard !experimentalModeLocked else { return }
         let now = Date()
         if let lastClick = experimentalTriggerLastClick,
            now.timeIntervalSince(lastClick) <= 0.8 {

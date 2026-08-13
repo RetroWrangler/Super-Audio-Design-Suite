@@ -93,6 +93,47 @@ Advanced SACD+ configuration:
         └── 📄 Track006.mp3
 ```
 
+SACD+ Enhanced Details
+----------------------
+
+**SACD+ uses the standard `DSD_DISC` and `PCM_DISC` folder paths for broad DSD
+Disc compatibility. SACD+ Enhanced instead places its audio files directly at
+the disc root, preserves DSF metadata, and offers a choice of UDF 1.02 or ISO
+9660 with Joliet for easier access on modern players and computers.** Because
+Enhanced Mode does not use the traditional DSD Disc folder structure, it may
+have lower compatibility with older DSD Disc hardware.
+
+SACD+ Enhanced accepts DSF files for its DSD path and can optionally add FLAC
+Hybrid support copies, or WAV copies when Uncompressed Support Mode is enabled.
+DSF files are written first, followed by the optional PCM support files.
+
+```text
+📁 SACD+ Enhanced Disc Root (UDF 1.02 or ISO 9660 + Joliet)
+├── 📄 001-Track Name.dsf
+├── 📄 002-Track Name.dsf
+├── 📄 003-Track Name.dsf
+│
+├── 📄 004-Track Name.flac       ← Optional Hybrid support files
+├── 📄 005-Track Name.flac
+└── 📄 006-Track Name.flac       ← WAV when Uncompressed Support Mode is enabled
+```
+
+| Feature | SACD+ Enhanced Support |
+|---|---|
+| Stereo DSF | Supported |
+| Preserved DSF metadata | Supported |
+| FLAC Hybrid copies | Supported |
+| WAV Hybrid copies | Supported |
+| UDF 1.02 | Supported |
+| ISO 9660 + Joliet | Supported |
+| Multichannel Mode | Not supported |
+| Maximum Compatibility Mode | Not supported |
+| MP3 compatibility copies | Not supported |
+
+Multichannel and Maximum Compatibility projects must use standard SACD+ Mode,
+where their separate `ALBUM02`, `ALBUM03`, and PCM compatibility paths can be
+authored correctly.
+
 ## Features
 
 - **Drag & Drop Interface**: Easy audio file management
@@ -162,16 +203,18 @@ Hybrid Mode and does not create `PCM_DISC`, FLAC, WAV, or MP3 paths.
 ### SACDx Formatting Details
 
 ```text
-SACDx Disc Root
-├── BACKUP
-│   └── <selected backup>.iso
-└── DSD_DISC
-    ├── ALBUM01                 stereo DSF path
-    │   ├── TRACK001.dsf
-    │   └── TRACK002.dsf
-    └── ALBUM02                 optional multichannel DSF path
-        ├── TRACK001.dsf
-        └── TRACK002.dsf
+📁 SACDx Disc Root (UDF)
+├── 📁 BACKUP/                         ← Embedded archival ISO
+│   └── 📄 <selected backup>.iso
+│
+└── 📁 DSD_DISC/                       ← Directly accessible DSD section
+    ├── 📁 ALBUM01/                    ← Stereo DSF path
+    │   ├── 📄 TRACK001.dsf
+    │   └── 📄 TRACK002.dsf
+    │
+    └── 📁 ALBUM02/                    ← Optional multichannel DSF path
+        ├── 📄 TRACK001.dsf
+        └── 📄 TRACK002.dsf
 ```
 
 The embedded backup ISO, stereo DSF files, and optional multichannel DSF files
