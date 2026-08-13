@@ -103,36 +103,33 @@ the disc root, preserves DSF metadata, and offers a choice of UDF 1.02 or ISO
 Enhanced Mode does not use the traditional DSD Disc folder structure, it may
 have lower compatibility with older DSD Disc hardware.
 
-SACD+ Enhanced accepts DSF files for its DSD path and can optionally add FLAC
-Hybrid support copies, or WAV copies when Uncompressed Support Mode is enabled.
-DSF files are written first, followed by the optional PCM support files.
+SACD+ Enhanced supports stereo and multichannel DSF, stereo and multichannel
+FLAC Hybrid support copies (or WAV in Uncompressed Support Mode), and MP3 copies
+through Maximum Compatibility Mode. Files remain directly accessible at the
+disc root and are grouped in a predictable sequence.
 
 ```text
 📁 SACD+ Enhanced Disc Root (UDF 1.02 or ISO 9660 + Joliet)
-├── 📄 001-Track Name.dsf
-├── 📄 002-Track Name.dsf
-├── 📄 003-Track Name.dsf
+├── 📄 001-Stereo Track 01.dsf          ← Stereo DSD
+├── 📄 002-Stereo Track 02.dsf
 │
-├── 📄 004-Track Name.flac       ← Optional Hybrid support files
-├── 📄 005-Track Name.flac
-└── 📄 006-Track Name.flac       ← WAV when Uncompressed Support Mode is enabled
+├── 📄 003-Multichannel Track 01.dsf    ← Multichannel DSD
+├── 📄 004-Multichannel Track 02.dsf
+│
+├── 📄 005-Stereo Track 01.flac         ← Stereo lossless support
+├── 📄 006-Stereo Track 02.flac         ← WAV in Uncompressed Support Mode
+│
+├── 📄 007-Multichannel Track 01.flac   ← Multichannel lossless support
+├── 📄 008-Multichannel Track 02.flac   ← WAV in Uncompressed Support Mode
+│
+├── 📄 009-Stereo Track 01.mp3          ← Maximum Compatibility copies
+└── 📄 010-Stereo Track 02.mp3
 ```
 
-| Feature | SACD+ Enhanced Support |
-|---|---|
-| Stereo DSF | Supported |
-| Preserved DSF metadata | Supported |
-| FLAC Hybrid copies | Supported |
-| WAV Hybrid copies | Supported |
-| UDF 1.02 | Supported |
-| ISO 9660 + Joliet | Supported |
-| Multichannel Mode | Not supported |
-| Maximum Compatibility Mode | Not supported |
-| MP3 compatibility copies | Not supported |
-
-Multichannel and Maximum Compatibility projects must use standard SACD+ Mode,
-where their separate `ALBUM02`, `ALBUM03`, and PCM compatibility paths can be
-authored correctly.
+This example shows Multichannel Mode, Maximum Compatibility Mode, and Hybrid
+Mode enabled together. With Uncompressed Support Mode enabled, the FLAC entries
+use WAV instead. Enhanced Mode preserves DSF metadata and supports either UDF
+1.02 or ISO 9660 with Joliet.
 
 ## Features
 
