@@ -7,6 +7,7 @@ import AppKit
 import UniformTypeIdentifiers
 import Foundation
 import AVFoundation
+import DiscRecording
 
 // MARK: - Extensions
 
@@ -35,6 +36,24 @@ struct TrackItem: Identifiable, Hashable {
     var url: URL
     var title: String { url.deletingPathExtension().lastPathComponent }
     var ext: String { url.pathExtension.lowercased() }
+}
+
+private struct ExperimentalTriggerButtonStyle: ButtonStyle {
+    let active: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.90 : 1.0)
+            .opacity(configuration.isPressed ? 0.62 : 1.0)
+            .background(
+                configuration.isPressed
+                    ? Color.primary.opacity(0.16)
+                    : (active ? Color.orange.opacity(0.14) : Color.clear)
+            )
+            .cornerRadius(10)
+            .shadow(color: configuration.isPressed ? .clear : .black.opacity(0.12), radius: 3, y: 2)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+    }
 }
 
 enum TrackDropTarget {
@@ -127,9 +146,6 @@ class DSDFileParser {
         }
         
         // Read FMT chunk data (little-endian)
-        let formatVersion = data.withUnsafeBytes { $0.load(fromByteOffset: 40, as: UInt32.self) }
-        let formatID = data.withUnsafeBytes { $0.load(fromByteOffset: 44, as: UInt32.self) }
-        let channelType = data.withUnsafeBytes { $0.load(fromByteOffset: 48, as: UInt32.self) }
         let channelNum = data.withUnsafeBytes { $0.load(fromByteOffset: 52, as: UInt32.self) }
         let samplingFreq = data.withUnsafeBytes { $0.load(fromByteOffset: 56, as: UInt32.self) }
         let bitsPerSample = data.withUnsafeBytes { $0.load(fromByteOffset: 60, as: UInt32.self) }
@@ -1073,6 +1089,7 @@ final class AuthoringState: ObservableObject {
             }
         }
     }
+    @Published var sacdPlusDirectBurnMode: Bool = false
     @Published var sacdPlusDiscCapacity: SACDPlusDiscCapacity = .standard
     @Published var sacdPlusEnhancedUseISO9660: Bool = false
     @Published var sacdPlusRenameTracks: Bool = true
@@ -1114,6 +1131,7 @@ final class AuthoringState: ObservableObject {
     @Published var sacdXMultichannelTracks: [TrackItem] = []
     @Published var sacdXRenameTracks: Bool = true
     @Published var sacdXDiscCapacity: SACDPlusDiscCapacity = .dualLayer
+    @Published var sacdXDirectBurnMode: Bool = false
 
     // SACD-R (template-based assembler)
     @Published var sacdSourceFolder: URL? = nil        // donor SACD folder (MASTER.TOC, 2CH/, optional MCH/) or ISO file
@@ -1132,6 +1150,7 @@ final class AuthoringState: ObservableObject {
     @Published var log: String = ""
     @Published var isWorking: Bool = false
     @Published var buildProgress: Double = 0.0
+    @Published var progressIsIndeterminate: Bool = false
     @Published var currentTask: String = ""
     @Published var buildCompleted: Bool = false
     @Published var buildFailed: Bool = false
@@ -1153,6 +1172,7 @@ final class AuthoringState: ObservableObject {
     
     func resetProgress() {
         buildProgress = 0.0
+        progressIsIndeterminate = false
         currentTask = ""
         buildCompleted = false
         buildFailed = false
@@ -1162,12 +1182,14 @@ final class AuthoringState: ObservableObject {
     func markBuildComplete() async {
         buildCompleted = true
         buildFailed = false
+        progressIsIndeterminate = false
         await updateProgress(1.0, task: "Build complete!")
     }
     
     func markBuildFailed() async {
         buildFailed = true
         buildCompleted = false
+        progressIsIndeterminate = false
         await updateProgress(0.0, task: "Build failed")
     }
 
@@ -1333,7 +1355,7 @@ final class AuthoringState: ObservableObject {
         }
         
         // Second try: macOS native metadata (for common formats)
-        if let title = extractTitleWithAVFoundation(from: url) {
+        if let title = await extractTitleWithAVFoundation(from: url) {
             return title
         }
         
@@ -1379,16 +1401,17 @@ final class AuthoringState: ObservableObject {
     }
     
     // Try extracting with AVFoundation (macOS native)
-    private func extractTitleWithAVFoundation(from url: URL) -> String? {
+    private func extractTitleWithAVFoundation(from url: URL) async -> String? {
         // This approach works for many audio formats on macOS
         do {
             let asset = AVURLAsset(url: url)
-            let metadata = asset.metadata
+            let metadata = try await asset.load(.metadata)
             
             for item in metadata {
                 if item.commonKey == .commonKeyTitle,
-                   let title = item.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !title.isEmpty {
+                   let value = try await item.load(.stringValue) {
+                    let title = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty else { continue }
                     let cleanTitle = title.replacingOccurrences(of: "[^A-Za-z0-9 \\-_().]", with: "", options: .regularExpression)
                     appendLog("✓ Extracted title via AVFoundation: '\(title)' -> '\(cleanTitle)'")
                     return cleanTitle
@@ -1912,12 +1935,20 @@ final class AuthoringState: ObservableObject {
             appendLog("No tracks to build.")
             return
         }
-        guard let outURL = pickSaveURL(suggested: "\(sacdPlusVolumeName).iso") else { return }
+        let directBurn = sacdPlusDirectBurnMode
+        let outURL: URL
+        if directBurn {
+            outURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("SACDPLUS_BURN_\(UUID().uuidString).iso")
+        } else {
+            guard let selectedURL = pickSaveURL(suggested: "\(sacdPlusVolumeName).iso") else { return }
+            outURL = selectedURL
+        }
 
         isWorking = true
         log = ""
         resetProgress()
-        appendLog("Building SACD+…")
+        appendLog(directBurn ? "Authoring SACD+ image for direct burn…" : "Building SACD+…")
         await updateProgress(0.05, task: "Initializing build...")
 
         do {
@@ -1926,6 +1957,9 @@ final class AuthoringState: ObservableObject {
                 .appendingPathComponent("SACDDesignSuite_SACDPLUS_\(UUID().uuidString)")
             let root = tmp
             defer { try? fm.removeItem(at: root) }
+            defer {
+                if directBurn { try? fm.removeItem(at: outURL) }
+            }
             var expectedDSFPaths: [String] = []
             var manifestLines = [
                 "SACD+ Build Manifest",
@@ -2074,8 +2108,10 @@ final class AuthoringState: ObservableObject {
             } else {
                 try await runMKISOFS(inputFolder: root, volumeName: sacdPlusVolumeName, outputISO: outURL)
             }
-            let manifestURL = try writeSACDPlusManifest(lines: manifestLines, nextTo: outURL)
-            appendLog("🧾 Build manifest created: \(manifestURL.path)")
+            if !directBurn {
+                let manifestURL = try writeSACDPlusManifest(lines: manifestLines, nextTo: outURL)
+                appendLog("🧾 Build manifest created: \(manifestURL.path)")
+            }
             await updateProgress(0.90, task: "Verifying ISO contents...")
             try verifySACDPlusISO(at: outURL, expectedDSFPaths: expectedDSFPaths)
             if !sacdPlusEnhancedMode && sacdPlusRenameTracks {
@@ -2085,12 +2121,19 @@ final class AuthoringState: ObservableObject {
                 appendLog("⚠️ Track renaming disabled: playback order depends on the player sorting the original filenames")
             }
             appendLog("✅ Verified \(expectedDSFPaths.count) DSF files in completed ISO")
-            lastBuiltISOURL = outURL
-            await markBuildComplete()
-            if sacdPlusEnhancedMode {
-                appendLog("✅ SACD+ Enhanced ISO created: \(outURL.path)")
+            if directBurn {
+                appendLog("✅ Temporary SACD+ image verified; starting optical burn")
+                try await burnISOImageDirectly(at: outURL)
+                appendLog("✅ SACD+ disc burned and verified")
+                await markBuildComplete()
             } else {
-                appendLog("✅ SACD+ ISO created: \(outURL.path)")
+                lastBuiltISOURL = outURL
+                await markBuildComplete()
+                if sacdPlusEnhancedMode {
+                    appendLog("✅ SACD+ Enhanced ISO created: \(outURL.path)")
+                } else {
+                    appendLog("✅ SACD+ ISO created: \(outURL.path)")
+                }
             }
         } catch {
             appendLog("❌ Error: \(error.localizedDescription)")
@@ -2225,6 +2268,135 @@ final class AuthoringState: ObservableObject {
             await markBuildFailed()
         }
         isWorking = false
+    }
+
+    func burnSACDxBackupISODirectly() async {
+        guard let isoURL = sacdXBackupISO,
+              FileManager.default.fileExists(atPath: isoURL.path) else {
+            appendLog("Choose an ISO to burn directly.")
+            return
+        }
+        resetProgress()
+        isWorking = true
+        log = ""
+        appendLog("Direct ISO burn selected. No SACDx folders or DSF tracks will be added.")
+        appendLog("Burning \(isoURL.lastPathComponent) sector-for-sector with verification…")
+        do {
+            try await burnISOImageDirectly(at: isoURL)
+            appendLog("✅ Direct ISO burn and verification completed")
+            await markBuildComplete()
+        } catch {
+            appendLog("❌ Burn error: \(error.localizedDescription)")
+            await markBuildFailed()
+        }
+        isWorking = false
+    }
+
+    private func burnISOImageDirectly(at isoURL: URL) async throws {
+        progressIsIndeterminate = false
+        await updateProgress(0.05, task: "Waiting for writable optical media…")
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        var burnArguments = ["burn", "-verifyburn", "-puppetstrings"]
+        if let selectedDrivePath = UserDefaults.standard.string(forKey: selectedOpticalDrivePathKey),
+           !selectedDrivePath.isEmpty {
+            burnArguments += ["-device", selectedDrivePath]
+            let selectedDriveName = UserDefaults.standard.string(forKey: "selectedOpticalDriveName") ?? selectedDrivePath
+            appendLog("Using selected optical drive: \(selectedDriveName)")
+        } else {
+            appendLog("Using the macOS default optical drive")
+        }
+        burnArguments.append(isoURL.path)
+        task.arguments = burnArguments
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        try task.run()
+        enum BurnPhase { case waiting, preparing, burning, finalizing, verifying }
+        var burnPhase: BurnPhase = .waiting
+        var lastDisplayedProgress = 0.05
+        var lastRawFraction = 0.0
+        for try await line in pipe.fileHandleForReading.bytes.lines {
+                let message = String(line)
+                if message.hasPrefix("MESSAGE:") {
+                    let status = String(message.dropFirst("MESSAGE:".count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !status.isEmpty { appendLog(status) }
+                    let normalizedStatus = status.lowercased()
+                    if normalizedStatus.contains("verify") {
+                        burnPhase = .verifying
+                        progressIsIndeterminate = false
+                        lastRawFraction = 0
+                        lastDisplayedProgress = max(lastDisplayedProgress, 0.82)
+                        await updateProgress(lastDisplayedProgress, task: "Verifying burned disc…")
+                    } else if normalizedStatus.contains("prepar") ||
+                                normalizedStatus.contains("open") ||
+                                normalizedStatus.contains("scan") {
+                        burnPhase = .preparing
+                        lastRawFraction = 0
+                        await updateProgress(max(lastDisplayedProgress, 0.06), task: "Preparing image and optical media…")
+                    } else if normalizedStatus.contains("close") ||
+                                normalizedStatus.contains("finish") ||
+                                normalizedStatus.contains("finaliz") {
+                        burnPhase = .finalizing
+                        progressIsIndeterminate = true
+                        lastRawFraction = 0
+                        await updateProgress(max(lastDisplayedProgress, 0.78), task: "Finishing burn and closing disc…")
+                    } else if normalizedStatus.contains("burn") || normalizedStatus.contains("writ") {
+                        if burnPhase != .burning {
+                            burnPhase = .burning
+                            lastRawFraction = 0
+                        }
+                        await updateProgress(max(lastDisplayedProgress, 0.10), task: "Burning selected ISO…")
+                    }
+                } else if message.hasPrefix("PERCENT:"),
+                          let rawPercent = Double(message.dropFirst("PERCENT:".count)),
+                          rawPercent >= 0 {
+                    let fraction = min(max(rawPercent > 1 ? rawPercent / 100 : rawPercent, 0), 1)
+                    if fraction + 0.05 < lastRawFraction {
+                        lastRawFraction = 0
+                    }
+                    lastRawFraction = fraction
+                    // Many optical drives stop reporting hdiutil percentages around 97%
+                    // while their hardware buffer is flushed and the disc/session is closed.
+                    // Treat that boundary as a distinct, indeterminate phase instead of
+                    // leaving a misleading determinate percentage frozen near 76%.
+                    if burnPhase == .burning && fraction >= 0.97 {
+                        burnPhase = .finalizing
+                        progressIsIndeterminate = true
+                        lastDisplayedProgress = max(lastDisplayedProgress, 0.78)
+                        await updateProgress(lastDisplayedProgress, task: "Finishing burn and closing disc…")
+                        continue
+                    }
+                    let mappedProgress: Double
+                    let phaseText: String
+                    switch burnPhase {
+                    case .waiting, .preparing:
+                        mappedProgress = 0.05 + (fraction * 0.05)
+                        phaseText = "Preparing image and optical media…"
+                    case .burning:
+                        mappedProgress = 0.10 + (fraction * 0.68)
+                        phaseText = "Burning selected ISO…"
+                    case .finalizing:
+                        mappedProgress = 0.78 + (fraction * 0.04)
+                        phaseText = "Finishing burn and closing disc…"
+                    case .verifying:
+                        mappedProgress = 0.82 + (fraction * 0.17)
+                        phaseText = "Verifying burned disc…"
+                    }
+                    if mappedProgress >= lastDisplayedProgress + 0.007 || mappedProgress >= 0.99 {
+                        lastDisplayedProgress = mappedProgress
+                        await updateProgress(mappedProgress, task: phaseText)
+                    }
+                } else if !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    appendLog(message)
+                }
+            }
+            task.waitUntilExit()
+        guard task.terminationStatus == 0 else {
+            throw NSError(domain: "SACDDesignSuite", code: Int(task.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "Direct ISO burn failed with exit code \(task.terminationStatus)"])
+        }
     }
 
     // MARK: - Strip metadata from audio files using ffmpeg
@@ -2527,7 +2699,6 @@ final class AuthoringState: ObservableObject {
             appendLog("✅ Generated Area TOC at sectors \(areaTOCSector)-\(areaTOCSector + 1)")
             
             // Add DSD audio data extracted from DSF files
-            let audioStartSector = areaTOCStartSector + 20
             for (index, track) in dsdTracks.enumerated() {
                 appendLog("Adding track \(index + 1) raw DSD audio data...")
                 
@@ -2759,7 +2930,7 @@ struct SpaceUsageBar: View {
                 }
             }
             
-            if let capacity = capacity {
+            if capacity != nil {
                 // Progress bar for limited capacity
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
@@ -2817,6 +2988,15 @@ struct SpaceUsageBar: View {
 }
 
 struct ContentView: View {
+    private enum PendingDirectBurn {
+        case sacdPlus
+        case sacdX
+    }
+
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage(minimalistModeKey) private var minimalistMode = true
+    @AppStorage(sacdPlusFocusModeKey) private var sacdPlusFocusMode = true
+    @AppStorage(startupInterfaceModeKey) private var startupInterfaceMode = "super"
     @StateObject private var state = AuthoringState()
     @State private var sacdPlusSelection = Set<TrackItem.ID>()
     @State private var multichannelDSFSelection = Set<TrackItem.ID>()
@@ -2825,53 +3005,142 @@ struct ContentView: View {
     @State private var sacdXStereoSelection = Set<TrackItem.ID>()
     @State private var sacdXMultichannelSelection = Set<TrackItem.ID>()
     @State private var showLog: Bool = false
-    @State private var showHelpPane: Bool = true
+    @State private var showHelpPane: Bool = false
     @State private var experimentalMode: Bool = false
+    @State private var showExperimentalModeWarning: Bool = false
+    @State private var experimentalTriggerClickCount: Int = 0
+    @State private var experimentalTriggerLastClick: Date? = nil
+    @State private var showDriveWarning: Bool = false
+    @State private var pendingDirectBurn: PendingDirectBurn? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
             content
             Divider()
             footer
         }
         .frame(minWidth: 900, minHeight: 560)
-    }
-
-    private var header: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Picker("Mode", selection: $state.mode) {
-                    ForEach(experimentalMode ? AuthoringMode.allCases : [.sacdPlus, .sacdX]) { mode in
-                        Text(mode.rawValue).tag(mode)
+        .toolbar {
+            if !sacdPlusFocusMode {
+                ToolbarItem(placement: .navigation) {
+                    Picker("Mode", selection: $state.mode) {
+                        ForEach(availableAuthoringModes) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .frame(width: 360)
                 }
-                .pickerStyle(.segmented)
-                Spacer()
-                Button {
-                    experimentalMode.toggle()
-                    if !experimentalMode && state.mode == .sacdR {
-                        state.mode = .sacdPlus
+            }
+            if !minimalistMode {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showHelpPane.toggle()
+                    } label: {
+                        Label(showHelpPane ? "Hide Help Pane" : "Show Help Pane",
+                              systemImage: showHelpPane ? "sidebar.left" : "sidebar.right")
                     }
-                } label: {
-                    Label(experimentalMode ? "Exit Experimental Mode" : "Enter Experimental Mode",
-                          systemImage: experimentalMode ? "testtube.2" : "testtube.2")
-                }
-                Button {
-                    showHelpPane.toggle()
-                } label: {
-                    Label(showHelpPane ? "Hide Help Pane" : "Show Help Pane",
-                          systemImage: showHelpPane ? "sidebar.left" : "sidebar.right")
                 }
             }
         }
-        .padding(12)
+        .alert("Enter Experimental Mode?", isPresented: $showExperimentalModeWarning) {
+            Button("Cancel", role: .cancel) { }
+            Button("Continue", role: .destructive) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    experimentalMode = true
+                }
+            }
+        } message: {
+            Text("Experimental features are incomplete, unsupported, and provided for testing at your own risk. They may produce unusable images, failed burns, incompatible discs, or unintended data loss. The creators and contributors of this program accept no responsibility for damage, loss, infringement, or other consequences resulting from their use.\n\nSACD and related technologies and trademarks are the property of their respective rights holders, including Sony and Philips. This project is independent and is not affiliated with, endorsed by, or sponsored by those companies. Use these tools only with original material and donor templates you are legally authorized to use.")
+        }
+        .alert(driveWarningTitle, isPresented: $showDriveWarning) {
+            Button("Cancel", role: .cancel) { pendingDirectBurn = nil }
+            Button("Open Settings…") {
+                pendingDirectBurn = nil
+                openSettings()
+            }
+            if writableOpticalDrives.count > 1 {
+                Button("Burn Anyway") { performPendingDirectBurn() }
+            }
+        } message: {
+            Text(driveWarningMessage)
+        }
+        .onChange(of: minimalistMode) { _, enabled in
+            if enabled {
+                showHelpPane = false
+                experimentalMode = false
+                state.sacdXDirectBurnMode = false
+                if state.mode == .sacdR { state.mode = .sacdPlus }
+            }
+        }
+        .onChange(of: sacdPlusFocusMode) { _, enabled in
+            if enabled && state.mode == .sacdX { state.mode = .sacdPlus }
+        }
+        .onAppear { applyStartupInterfaceMode() }
+    }
+
+    private var writableOpticalDrives: [DRDevice] {
+        (DRDevice.devices() as? [DRDevice] ?? []).filter { $0.writesDVD() }
+    }
+
+    private func applyStartupInterfaceMode() {
+        switch startupInterfaceMode {
+        case "minimalist":
+            minimalistMode = true
+            sacdPlusFocusMode = false
+        case "focus":
+            minimalistMode = false
+            sacdPlusFocusMode = true
+        case "super":
+            minimalistMode = true
+            sacdPlusFocusMode = true
+        default:
+            break
+        }
+    }
+
+    private var driveWarningTitle: String {
+        writableOpticalDrives.isEmpty ? "No Optical Drive Detected" : "Multiple Optical Drives Detected"
+    }
+
+    private var driveWarningMessage: String {
+        if writableOpticalDrives.isEmpty {
+            return "No writable optical drive is currently connected. Connect a compatible disc writer, then open Settings and refresh the drive list before trying again."
+        }
+        let selectedName = UserDefaults.standard.string(forKey: "selectedOpticalDriveName") ?? "Automatic"
+        return "More than one writable optical drive is connected. The current burner setting is “\(selectedName)”. Open Settings to confirm the intended drive before continuing."
+    }
+
+    private func requestDirectBurn(_ burn: PendingDirectBurn) {
+        pendingDirectBurn = burn
+        if writableOpticalDrives.count != 1 {
+            showDriveWarning = true
+        } else {
+            performPendingDirectBurn()
+        }
+    }
+
+    private func performPendingDirectBurn() {
+        guard let burn = pendingDirectBurn else { return }
+        pendingDirectBurn = nil
+        switch burn {
+        case .sacdPlus:
+            Task { await state.buildSACDPlus() }
+        case .sacdX:
+            Task { await state.burnSACDxBackupISODirectly() }
+        }
+    }
+
+    private var availableAuthoringModes: [AuthoringMode] {
+        if experimentalMode && !minimalistMode {
+            return sacdPlusFocusMode ? [.sacdPlus, .sacdR] : AuthoringMode.allCases
+        }
+        return sacdPlusFocusMode ? [.sacdPlus] : [.sacdPlus, .sacdX]
     }
 
     @ViewBuilder private var content: some View {
         HStack(alignment: .top, spacing: 0) {
-            if showHelpPane {
+            if showHelpPane && !minimalistMode {
                 descriptionPanel
                     .frame(width: 340, alignment: .top)
                     .padding(12)
@@ -2898,11 +3167,14 @@ struct ContentView: View {
     private var sacdPlusView: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Spacer()
-                Image("SACDPlusLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 100, height: 100)
+                if !minimalistMode { experimentalModeTrigger }
+                if !minimalistMode {
+                    Spacer()
+                    Image("SACDPlusLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 100, height: 100)
+                }
             }
 
             HStack {
@@ -2916,6 +3188,22 @@ struct ContentView: View {
                     Text("Stereo DSD Folder: ALBUM01")
                         .foregroundColor(.secondary)
                 }
+            }
+
+            HStack {
+                Text("Output:")
+                Picker("", selection: $state.sacdPlusDirectBurnMode) {
+                    Text("Create ISO").tag(false)
+                    Text("Burn Directly").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 260)
+                Text(state.sacdPlusDirectBurnMode
+                     ? "Authors and verifies a temporary deterministic ISO, then burns and verifies the disc."
+                     : "Creates and verifies an ISO file that you can save or burn later.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
             }
             
             HStack {
@@ -3264,8 +3552,15 @@ struct ContentView: View {
 
             HStack {
                 Spacer()
-                Button(action: { Task { await state.buildSACDPlus() } }) {
-                    Label("Build SACD+ ISO", systemImage: "opticaldisc")
+                Button(action: {
+                    if state.sacdPlusDirectBurnMode {
+                        requestDirectBurn(.sacdPlus)
+                    } else {
+                        Task { await state.buildSACDPlus() }
+                    }
+                }) {
+                    Label(state.sacdPlusDirectBurnMode ? "Author and Burn SACD+" : "Build SACD+ ISO",
+                          systemImage: "opticaldisc")
                 }
                 .disabled(state.isWorking || state.sacdPlusTracks.isEmpty)
             }
@@ -3415,40 +3710,60 @@ struct ContentView: View {
 
     private var sacdXView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("SACDx")
-                .font(.largeTitle.bold())
+            HStack {
+                if !minimalistMode { experimentalModeTrigger }
+                if !minimalistMode {
+                    Spacer()
+                    Image("SACDextendedlogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 100, height: 100)
+                }
+            }
             Text("Creates a data disc containing an original ISO backup plus directly accessible DSF album paths. SACDx does not include Hybrid Mode or PCM_DISC.")
                 .foregroundColor(.secondary)
 
-            HStack {
-                Text("Volume Name:")
-                TextField("SACDX", text: $state.sacdXVolumeName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-                Toggle("Multichannel", isOn: $state.sacdXMultichannelMode)
-                Toggle("Disable Track Renaming", isOn: Binding(
-                    get: { !state.sacdXRenameTracks },
-                    set: { state.sacdXRenameTracks = !$0 }
-                ))
-                Spacer()
-            }
-            HStack {
-                Text("Disc Capacity:")
-                Picker("", selection: $state.sacdXDiscCapacity) {
-                    ForEach(SACDPlusDiscCapacity.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            if experimentalMode {
+                Toggle("Disable Backup Mode", isOn: $state.sacdXDirectBurnMode)
+                if state.sacdXDirectBurnMode {
+                    Label("Experimental direct burn: the selected ISO will be written sector-for-sector and verified. No BACKUP or DSD_DISC content will be authored or added.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .pickerStyle(.menu)
-                .frame(width: 200)
-                Spacer()
             }
-            SpaceUsageBar(
-                projectSize: state.calculateProjectSize(),
-                capacity: state.sacdXDiscCapacity.bytes,
-                capacityName: state.sacdXDiscCapacity.rawValue,
-                formatBytes: state.formatBytes
-            )
 
-            GroupBox("BACKUP Folder") {
+            if !state.sacdXDirectBurnMode {
+                HStack {
+                    Text("Volume Name:")
+                    TextField("SACDX", text: $state.sacdXVolumeName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                    Toggle("Multichannel", isOn: $state.sacdXMultichannelMode)
+                    Toggle("Disable Track Renaming", isOn: Binding(
+                        get: { !state.sacdXRenameTracks },
+                        set: { state.sacdXRenameTracks = !$0 }
+                    ))
+                    Spacer()
+                }
+                HStack {
+                    Text("Disc Capacity:")
+                    Picker("", selection: $state.sacdXDiscCapacity) {
+                        ForEach(SACDPlusDiscCapacity.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                    Spacer()
+                }
+                SpaceUsageBar(
+                    projectSize: state.calculateProjectSize(),
+                    capacity: state.sacdXDiscCapacity.bytes,
+                    capacityName: state.sacdXDiscCapacity.rawValue,
+                    formatBytes: state.formatBytes
+                )
+            }
+
+            GroupBox(state.sacdXDirectBurnMode ? "ISO to Burn Directly" : "BACKUP Folder") {
                 HStack {
                     Button("Choose Backup ISO…") { state.pickSACDxBackupISO() }
                     Text(state.sacdXBackupISO?.path ?? "No ISO selected")
@@ -3460,31 +3775,37 @@ struct ContentView: View {
                 .padding(.vertical, 4)
             }
 
-            sacdXTrackSection(
-                title: "Stereo DSD Album — DSD_DISC/ALBUM01",
-                tracks: state.sacdXStereoTracks,
-                selection: $sacdXStereoSelection,
-                multichannel: false,
-                dropTarget: .sacdXStereoDSF
-            )
-            if state.sacdXMultichannelMode {
+            if !state.sacdXDirectBurnMode {
                 sacdXTrackSection(
-                    title: "Multichannel DSD Album — DSD_DISC/ALBUM02",
-                    tracks: state.sacdXMultichannelTracks,
-                    selection: $sacdXMultichannelSelection,
-                    multichannel: true,
-                    dropTarget: .sacdXMultichannelDSF
+                    title: "Stereo DSD Album — DSD_DISC/ALBUM01",
+                    tracks: state.sacdXStereoTracks,
+                    selection: $sacdXStereoSelection,
+                    multichannel: false,
+                    dropTarget: .sacdXStereoDSF
                 )
+                if state.sacdXMultichannelMode {
+                    sacdXTrackSection(
+                        title: "Multichannel DSD Album — DSD_DISC/ALBUM02",
+                        tracks: state.sacdXMultichannelTracks,
+                        selection: $sacdXMultichannelSelection,
+                        multichannel: true,
+                        dropTarget: .sacdXMultichannelDSF
+                    )
+                }
             }
 
             HStack {
                 Spacer()
                 Button {
-                    Task { await state.buildSACDx() }
+                    if state.sacdXDirectBurnMode {
+                        requestDirectBurn(.sacdX)
+                    } else {
+                        Task { await state.buildSACDx() }
+                    }
                 } label: {
-                    Label("Build SACDx ISO", systemImage: "opticaldisc")
+                    Label(state.sacdXDirectBurnMode ? "Burn Selected ISO Directly" : "Build SACDx ISO", systemImage: "opticaldisc")
                 }
-                .disabled(state.isWorking || state.sacdXBackupISO == nil || state.sacdXStereoTracks.isEmpty)
+                .disabled(state.isWorking || state.sacdXBackupISO == nil || (!state.sacdXDirectBurnMode && state.sacdXStereoTracks.isEmpty))
             }
         }
         .padding(12)
@@ -3553,6 +3874,7 @@ struct ContentView: View {
     private var sacdRView: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 16) {
+                if !minimalistMode { experimentalModeTrigger }
                 GroupBox {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Rights & Responsible Use", systemImage: "shield.lefthalf.filled")
@@ -3566,11 +3888,13 @@ struct ContentView: View {
                     .padding(.vertical, 2)
                 }
                 .frame(maxWidth: 680, alignment: .leading)
-                Spacer()
-                Image("SACDRLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 100, height: 100)
+                if !minimalistMode {
+                    Spacer()
+                    Image("SACDRLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 100, height: 100)
+                }
             }
 
             HStack {
@@ -3774,13 +4098,25 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Text(String(format: "%.0f%%", state.buildProgress * 100))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            if state.progressIsIndeterminate {
+                                Text("Working…")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text(String(format: "%.0f%%", state.buildProgress * 100))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                        ProgressView(value: state.buildProgress, total: 1.0)
-                            .progressViewStyle(LinearProgressViewStyle(tint: .blue))
-                            .frame(height: 4)
+                        if state.progressIsIndeterminate {
+                            ProgressView()
+                                .progressViewStyle(LinearProgressViewStyle(tint: .blue))
+                                .frame(height: 4)
+                        } else {
+                            ProgressView(value: state.buildProgress, total: 1.0)
+                                .progressViewStyle(LinearProgressViewStyle(tint: .blue))
+                                .frame(height: 4)
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -3790,9 +4126,55 @@ struct ContentView: View {
         .padding(12)
     }
 
+    private var experimentalModeTrigger: some View {
+        Button(action: registerExperimentalTriggerClick) {
+            VStack(spacing: 4) {
+                Image("DSDlogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 82, height: 82)
+                if experimentalMode {
+                    Text("Experimental")
+                        .font(.caption.bold())
+                        .foregroundColor(.orange)
+                }
+            }
+            .frame(width: 100, height: 100)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(ExperimentalTriggerButtonStyle(active: experimentalMode))
+        .accessibilityLabel(experimentalMode ? "Experimental Mode enabled" : "DSD")
+        .help(experimentalMode ? "Experimental Mode enabled" : "DSD")
+    }
+
+    private func registerExperimentalTriggerClick() {
+        let now = Date()
+        if let lastClick = experimentalTriggerLastClick,
+           now.timeIntervalSince(lastClick) <= 0.8 {
+            experimentalTriggerClickCount += 1
+        } else {
+            experimentalTriggerClickCount = 1
+        }
+        experimentalTriggerLastClick = now
+
+        guard experimentalTriggerClickCount >= 3 else { return }
+        experimentalTriggerClickCount = 0
+        experimentalTriggerLastClick = nil
+        if experimentalMode {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                experimentalMode = false
+            }
+            if state.mode == .sacdR { state.mode = .sacdPlus }
+            state.sacdXDirectBurnMode = false
+        } else {
+            showExperimentalModeWarning = true
+        }
+    }
+
     private var descriptionPanel: some View {
-        Group {
-            switch state.mode {
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                switch state.mode {
             case .sacdX:
                 VStack(alignment: .leading, spacing: 10) {
                     Text("SACDx").font(.headline).bold()
@@ -3906,9 +4288,14 @@ struct ContentView: View {
                         .font(.caption)
                     }
                 }
+                }
             }
         }
     }
 }
 
-#Preview { ContentView() }
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
+}

@@ -106,11 +106,14 @@ Advanced SACD+ configuration:
 
 ## Usage
 
+Before a direct burn, open **SACD Design Suite → Settings…** to choose a specific
+DVD writer, or leave the burner set to **Automatic** to let macOS select it.
+
 1. **Select Mode**: SACD+ is available by default. Traditional SACD is hidden unless Experimental Mode is enabled.
 2. **Add Audio Files**: Add DSF files to the application
 3. **Configure Settings**: Set disc title, artist, and track information
-4. **Generate Disc**: Click "Create SACD+" to build the ISO image
-5. **Burn & Test**: Burn to DVD-R DL and test on your SACD player
+4. **Choose Output**: Select **Create ISO** to save the authored image, or **Burn Directly** to author, burn, and verify the disc in one operation
+5. **Build or Burn**: Start the SACD+ operation and test the completed disc on your player
 
 ## Technical Notes
 
@@ -139,7 +142,7 @@ preserved and playback order depends on the player interpreting those names.
 
 ### File Formats Supported
 - **Input**: DSF, WAV (high-resolution), FLAC
-- **Output**: ISO image ready for DVD-R DL burning
+- **Output**: A verified ISO image, or a directly burned and verified optical disc
 - **Metadata**: Embedded track and album information
 
 What is SACDx?
@@ -168,12 +171,20 @@ The embedded backup ISO, stereo DSF files, and optional multichannel DSF files
 all count toward disc capacity. SACDx uses the bundled `mkisofs` authoring and
 directory-order verification used by SACD+.
 
+When the application’s Experimental Mode is enabled, SACDx also exposes
+**Disable Backup Mode**. This changes SACDx into a direct-burn workflow: the
+selected ISO is written sector-for-sector with macOS `hdiutil burn` and verified
+afterward, equivalent to Finder’s **Burn Disk Image to Disc** action. No new
+SACDx filesystem, `BACKUP` folder, or `DSD_DISC` content is created in this
+workflow. Leaving Experimental Mode turns the option off automatically.
+
 Experimental SACD Mode
 ----------------------
 
 Traditional SACD authoring is intentionally kept out of the primary SACD+
-workflow. Select **Enter Experimental Mode** in the application’s top bar to
-expose it. The mode selector will then show SACD after SACD+.
+workflow. Triple-click the DSD icon at the upper-left of the active mode pane to
+toggle Experimental Mode. The icon gains an orange border and Experimental
+indicator while active, and the mode selector shows SACD after SACD+.
 
 This mode is intended for lawful authoring of original material using a donor
 SACD template that the user is authorized to use. SACD and its related
