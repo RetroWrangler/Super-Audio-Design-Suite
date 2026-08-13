@@ -1,6 +1,24 @@
-# SACD Design Suite
+# Super Audio Design Suite
 
-A macOS application for authoring Super Audio CDs (SACD) and SACD+ discs.
+A macOS authoring suite for creating SACD+ hybrid audio discs and SACDx archival discs, with deterministic track ordering, verified ISO generation, and direct optical-disc burning.
+
+## Current Status
+
+### ✅ SACD+ Mode - **FULLY FUNCTIONAL**
+The SACD+ authoring pipeline is complete and working:
+- Creates hybrid discs with both PCM and DSD folders
+- Generated discs play perfectly on all compatible players
+- Supports both stereo and multichannel DSD audio
+- Full metadata and track information support
+
+### ✅ SACDx Mode - **FULLY FUNCTIONAL**
+The SACDx authoring pipeline is complete and working:
+- Creates deterministic discs containing both an ISO backup and directly accessible DSD paths
+- Supports stereo and multichannel DSF album folders
+- Verifies authored ISO contents and track ordering before completion
+- Supports verified direct ISO burning through Experimental Mode
+
+ALL MODES REQUIRE DVD+R OR DVD+R DL
 
 What is SACD+?
 --------------
@@ -13,17 +31,6 @@ What is SACD+?
 - **Network audio systems** (via PCM folder streaming)
 
 SACD+ maintains the full DSD DISC structure while adding PCM build folders for enhanced compatibility without requiring a separate CD layer.
-
-## Current Status
-
-### ✅ SACD+ Mode - **FULLY FUNCTIONAL**
-The SACD+ authoring pipeline is complete and working:
-- Creates hybrid discs with both PCM and DSD folders
-- Generated discs play perfectly on all compatible players
-- Supports both stereo and multichannel DSD audio
-- Full metadata and track information support
-
-ALL MODES REQUIRE DVD+R OR DVD+R DL
 
 SACD+ Details
 -------------
